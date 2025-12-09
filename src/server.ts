@@ -166,9 +166,39 @@ import { createInitialCounselorContext, getCounselorReply } from "./llmClient.js
 import type { CounselorContext } from "./llmClient.js";
 import { synthesizeSpeech } from "./ttsClient.js";
 
+import { createServer } from 'http';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8080;
 
-const wss = new WebSocketServer({ port: PORT });
+// Create HTTP server to serve the frontend
+const server = createServer((req, res) => {
+  if (req.url === '/' || req.url === '/index.html') {
+    try {
+      const html = readFileSync(join(process.cwd(), 'public', 'index.html'), 'utf-8');
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(html);
+    } catch (err) {
+      res.writeHead(500);
+      res.end('Error loading frontend');
+    }
+  } else if (req.url === '/favicon.svg') {
+    // Optional: Handle favicon if it exists, or 404
+    res.writeHead(404);
+    res.end();
+  } else {
+    res.writeHead(404);
+    res.end('Not found');
+  }
+});
+
+// Attach WebSocket server to the HTTP server
+const wss = new WebSocketServer({ server });
+
+server.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});
 wss.on("connection", async (ws: WebSocket) => {
   console.log("New WebSocket connection");
 
