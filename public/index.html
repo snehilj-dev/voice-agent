@@ -1,10 +1,22 @@
-<!-- <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Admissions Voice Agent</title>
+  <title>Voice AI Agent</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <style>
+    :root {
+      --primary-color: #667eea;
+      --secondary-color: #764ba2;
+      --bg-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      --glass-bg: rgba(255, 255, 255, 0.95);
+      --text-color: #333;
+      --error-color: #dc3545;
+      --success-color: #28a745;
+    }
+
     * {
       margin: 0;
       padding: 0;
@@ -12,444 +24,432 @@
     }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg-gradient);
       min-height: 100vh;
       display: flex;
       justify-content: center;
       align-items: center;
+      color: var(--text-color);
+    }
+
+    .app {
+      width: 100%;
       padding: 20px;
+      display: flex;
+      justify-content: center;
     }
 
     .container {
-      background: white;
+      background: var(--glass-bg);
+      backdrop-filter: blur(10px);
       border-radius: 20px;
       padding: 40px;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-      max-width: 500px;
       width: 100%;
+      max-width: 500px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      text-align: center;
     }
 
-    h1 {
-      text-align: center;
-      color: #333;
+    .header {
       margin-bottom: 30px;
+    }
+
+    .header h1 {
       font-size: 28px;
+      margin-bottom: 10px;
+      color: #333;
+    }
+
+    .subtitle {
+      color: #666;
+      font-size: 16px;
+    }
+
+    .status-card {
+      background: #f8f9fa;
+      border-radius: 15px;
+      padding: 20px;
+      margin-bottom: 30px;
+      border: 1px solid #e9ecef;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 15px;
+    }
+
+    .status-indicator {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .pulse {
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      background-color: #ccc;
+      transition: all 0.3s ease;
+    }
+
+    .pulse.listening {
+      background-color: var(--error-color);
+      box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7);
+      animation: pulse-red 1.5s infinite;
+    }
+
+    .pulse.speaking {
+      background-color: var(--success-color);
+      box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.7);
+      animation: pulse-green 1.5s infinite;
+    }
+
+    .pulse.processing {
+      background-color: var(--primary-color);
+      animation: spin 1s infinite linear;
+      /* Make it look like a spinner for processing if desired, or just pulse blue */
+      animation: pulse-blue 1.5s infinite;
+    }
+
+    @keyframes pulse-red {
+      0% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7);
+      }
+
+      70% {
+        transform: scale(1);
+        box-shadow: 0 0 0 10px rgba(220, 53, 69, 0);
+      }
+
+      100% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(220, 53, 69, 0);
+      }
+    }
+
+    @keyframes pulse-green {
+      0% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.7);
+      }
+
+      70% {
+        transform: scale(1);
+        box-shadow: 0 0 0 10px rgba(40, 167, 69, 0);
+      }
+
+      100% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(40, 167, 69, 0);
+      }
+    }
+
+    @keyframes pulse-blue {
+      0% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(102, 126, 234, 0.7);
+      }
+
+      70% {
+        transform: scale(1);
+        box-shadow: 0 0 0 10px rgba(102, 126, 234, 0);
+      }
+
+      100% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(102, 126, 234, 0);
+      }
+    }
+
+    .status-text {
+      font-weight: 600;
+      color: #444;
+      font-size: 18px;
+    }
+
+    .connection-status {
+      font-size: 12px;
+      color: #666;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: #ccc;
+    }
+
+    .status-dot.connected {
+      background-color: var(--success-color);
+    }
+
+    .status-dot.disconnected {
+      background-color: var(--error-color);
+    }
+
+    .error-message {
+      color: var(--error-color);
+      font-size: 14px;
+      background: #fff5f5;
+      padding: 8px 12px;
+      border-radius: 6px;
+      width: 100%;
     }
 
     .controls {
       display: flex;
-      flex-direction: column;
-      gap: 20px;
+      justify-content: center;
+      margin-bottom: 30px;
     }
 
-    .button {
-      padding: 15px 30px;
+    .btn {
+      padding: 15px 40px;
       border: none;
-      border-radius: 10px;
-      font-size: 16px;
+      border-radius: 30px;
+      font-size: 18px;
       font-weight: 600;
       cursor: pointer;
       transition: all 0.3s ease;
       display: flex;
       align-items: center;
-      justify-content: center;
       gap: 10px;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
     }
 
-    .button:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
     }
 
-    .button:active {
-      transform: translateY(0);
-    }
-
-    .button.primary {
-      background: #667eea;
+    .btn-start {
+      background: var(--primary-color);
       color: white;
     }
 
-    .button.primary:hover {
-      background: #5568d3;
+    .btn-start:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
     }
 
-    .button.secondary {
-      background: #f0f0f0;
-      color: #333;
+    .btn-end {
+      background: #ff4757;
+      color: white;
     }
 
-    .button.secondary:hover {
-      background: #e0e0e0;
+    .btn-end:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(255, 71, 87, 0.4);
     }
 
-    .button:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-      transform: none;
-    }
-
-    .status {
-      text-align: center;
-      padding: 15px;
-      border-radius: 10px;
-      margin-top: 20px;
+    .info {
+      text-align: left;
+      background: #f8f9fa;
+      padding: 20px;
+      border-radius: 15px;
       font-size: 14px;
-      color: #666;
+      color: #555;
     }
 
-    .status.connected {
-      background: #d4edda;
-      color: #155724;
+    .info p {
+      margin-bottom: 10px;
     }
 
-    .status.disconnected {
-      background: #f8d7da;
-      color: #721c24;
+    .info ul {
+      list-style-position: inside;
+      padding-left: 10px;
     }
 
-    .status.recording {
-      background: #fff3cd;
-      color: #856404;
+    .info li {
+      margin-bottom: 5px;
     }
   </style>
 </head>
+
 <body>
-  <div class="container">
-    <h1>🎤 Admissions Voice Agent</h1>
-    <div class="controls">
-      <button id="connectBtn" class="button primary">Connect</button>
-      <button id="micBtn" class="button secondary" disabled>🎤 Start Recording</button>
-      <button id="stopBtn" class="button secondary" disabled>⏹ Stop Recording</button>
+  <div class="app">
+    <div class="container">
+      <div class="header">
+        <h1>🎙️ Voice AI Agent</h1>
+        <p class="subtitle">Talk to Riya - Your Admissions Assistant</p>
+      </div>
+
+      <div class="status-card">
+        <div class="status-indicator">
+          <div id="pulse-indicator" class="pulse"></div>
+          <span id="status-text" class="status-text">Ready to start</span>
+        </div>
+
+        <div id="error-container" style="display: none;" class="error-message"></div>
+
+        <div class="connection-status">
+          <span id="conn-dot" class="status-dot disconnected"></span>
+          <span id="conn-text">Disconnected</span>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button id="start-btn" class="btn btn-start">
+          <span class="btn-icon">📞</span> Start Call
+        </button>
+        <button id="end-btn" class="btn btn-end" style="display: none;">
+          <span class="btn-icon">📴</span> End Call
+        </button>
+      </div>
+
+      <div class="info">
+        <p>💡 <strong>How it works:</strong></p>
+        <ul>
+          <li>Click "Start Call" to begin</li>
+          <li>Speak naturally - the agent will listen</li>
+          <li>Wait for Riya to respond</li>
+          <li>Click "End Call" when finished</li>
+        </ul>
+      </div>
     </div>
-    <div id="status" class="status disconnected">Disconnected</div>
   </div>
 
   <script>
-    let ws = null;
-    let mediaRecorder = null;
-    let audioChunks = [];
+    // --- Application State ---
+    let state = {
+      isConnected: false,
+      isCallActive: false, // User clicked Start Call
+      status: 'idle', // idle, listening, processing, speaking
+      error: null
+    };
 
-    const connectBtn = document.getElementById('connectBtn');
-    const micBtn = document.getElementById('micBtn');
-    const stopBtn = document.getElementById('stopBtn');
-    const status = document.getElementById('status');
+    // --- DOM Elements ---
+    const startBtn = document.getElementById('start-btn');
+    const endBtn = document.getElementById('end-btn');
+    const statusText = document.getElementById('status-text');
+    const pulse = document.getElementById('pulse-indicator');
+    const connDot = document.getElementById('conn-dot');
+    const connText = document.getElementById('conn-text');
+    const errorContainer = document.getElementById('error-container');
 
-    connectBtn.addEventListener('click', () => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.close();
-        return;
-      }
-
-      ws = new WebSocket(`ws://localhost:${window.location.port || 3000}`);
-
-      ws.onopen = () => {
-        status.textContent = 'Connected';
-        status.className = 'status connected';
-        connectBtn.textContent = 'Disconnect';
-        micBtn.disabled = false;
-      };
-
-      ws.onmessage = (event) => {
-        console.log('Received:', event.data);
-        // TODO: Handle audio response and play it
-      };
-
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        status.textContent = 'Connection Error';
-        status.className = 'status disconnected';
-      };
-
-      ws.onclose = () => {
-        status.textContent = 'Disconnected';
-        status.className = 'status disconnected';
-        connectBtn.textContent = 'Connect';
-        micBtn.disabled = true;
-        stopBtn.disabled = true;
-      };
-    });
-
-    micBtn.addEventListener('click', async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        mediaRecorder = new MediaRecorder(stream);
-        audioChunks = [];
-
-        mediaRecorder.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            audioChunks.push(event.data);
-            // Send audio chunk to server
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              event.data.arrayBuffer().then(buffer => {
-                ws.send(buffer);
-              });
-            }
-          }
-        };
-
-        mediaRecorder.onstop = () => {
-          stream.getTracks().forEach(track => track.stop());
-        };
-
-        mediaRecorder.start(100); // Send chunks every 100ms
-        status.textContent = 'Recording...';
-        status.className = 'status recording';
-        micBtn.disabled = true;
-        stopBtn.disabled = false;
-      } catch (error) {
-        console.error('Error accessing microphone:', error);
-        alert('Could not access microphone. Please check permissions.');
-      }
-    });
-
-    stopBtn.addEventListener('click', () => {
-      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-        mediaRecorder.stop();
-        status.textContent = 'Connected';
-        status.className = 'status connected';
-        micBtn.disabled = false;
-        stopBtn.disabled = true;
-      }
-    });
-  </script>
-</body>
-</html>
- -->
-<!-- <!DOCTYPE html>
- <html>
- <head>
-   <meta charset="UTF-8" />
-   <title>Admissions Voice Agent - Test</title>
- </head>
- <body>
-   <h1>WebSocket Test</h1>
-   <button id="connectBtn">Connect</button>
-   <button id="sendBtn">Send Test Message</button>
-   <pre id="log"></pre>
- 
-   <script>
-     let socket;
- 
-     const logEl = document.getElementById("log");
-     function log(msg) {
-       logEl.textContent += msg + "\n";
-     }
- 
-     document.getElementById("connectBtn").onclick = () => {
-       socket = new WebSocket("ws://localhost:8080");
- 
-       socket.onopen = () => log("WebSocket connected");
-       socket.onmessage = (event) => log("Received: " + event.data);
-       socket.onclose = () => log("WebSocket closed");
-       socket.onerror = (err) => log("WebSocket error: " + err);
-     };
- 
-     document.getElementById("sendBtn").onclick = () => {
-       if (!socket || socket.readyState !== WebSocket.OPEN) {
-         log("Socket not connected");
-         return;
-       }
-       socket.send("Hello from browser");
-     };
-   </script>
- </body>
- </html>
-  -->
-<!DOCTYPE html>
-<html>
-
-<head>
-  <meta charset="UTF-8" />
-  <title>Admissions Voice Agent - Audio Test</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-</head>
-
-<body>
-  <h1>Admissions Voice Agent - Audio Test</h1>
-  <button id="connectBtn">Connect WebSocket</button>
-  <button id="startMicBtn">Start Mic Stream</button>
-  <button id="stopMicBtn">Stop Mic Stream</button>
-  <pre id="log"></pre>
-
-  <script>
-    let socket;
-    let recognition;
+    // --- Audio & Logic Variables ---
+    let socket = null;
+    let recognition = null;
     let audioQueue = [];
     let isPlaying = false;
-    let activeAudio = null; // Track current audio
+    let activeAudio = null;
+    let silenceTimeout = null;
+    const SILENCE_THRESHOLD = 2000; // 2 seconds
 
-    // Silence Detection
-    let silenceTimeout;
-    const SILENCE_THRESHOLD = 2000; // 2 seconds (Adjustable)
-
-    const logEl = document.getElementById("log");
-    function log(msg) {
-      console.log(msg);
-      logEl.textContent += msg + "\n";
-    }
-
-    // Helper: Stop active audio for barge-in
-    function cancelAudio() {
-      if (activeAudio) {
-        activeAudio.pause();
-        activeAudio.currentTime = 0;
-        activeAudio = null;
+    // --- UI Update Helper ---
+    function updateUI() {
+      // connection
+      if (state.isConnected) {
+        connDot.className = 'status-dot connected';
+        connText.innerText = 'Connected';
+        startBtn.disabled = false;
+      } else {
+        connDot.className = 'status-dot disconnected';
+        connText.innerText = 'Disconnected';
+        startBtn.disabled = true;
       }
-      audioQueue = [];
-      isPlaying = false;
-      log(">> Barge-in: Audio stopped.");
+
+      // Error
+      if (state.error) {
+        errorContainer.style.display = 'block';
+        errorContainer.innerText = '⚠️ ' + state.error;
+      } else {
+        errorContainer.style.display = 'none';
+      }
+
+      // Call Buttons
+      if (state.isCallActive) {
+        startBtn.style.display = 'none';
+        endBtn.style.display = 'flex';
+      } else {
+        startBtn.style.display = 'flex';
+        endBtn.style.display = 'none';
+      }
+
+      // Status Text & Pulse
+      pulse.className = 'pulse'; // reset
+      if (!state.isCallActive) {
+        statusText.innerText = 'Ready to start';
+        state.status = 'idle';
+      } else {
+        // Mapping internal status to UI
+        switch (state.status) {
+          case 'listening':
+            statusText.innerText = '🎧 Listening...';
+            pulse.classList.add('listening');
+            break;
+          case 'processing':
+            statusText.innerText = '⚙️ Processing...';
+            pulse.classList.add('processing');
+            break;
+          case 'speaking':
+            statusText.innerText = '🔊 Agent speaking...';
+            pulse.classList.add('speaking');
+            break;
+          default:
+            statusText.innerText = 'Active';
+        }
+      }
     }
 
-    // 1) Connect to WebSocket
-    document.getElementById("connectBtn").onclick = () => {
+    // --- WebSocket Logic ---
+    function connectWebSocket() {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const host = window.location.host;
       const wsUrl = `${protocol}//${host}`;
-      console.log("Connecting to WebSocket at:", wsUrl);
 
       socket = new WebSocket(wsUrl);
       socket.binaryType = "arraybuffer";
 
-      socket.onopen = () => log("WebSocket connected");
+      socket.onopen = () => {
+        console.log("WS Connected");
+        state.isConnected = true;
+        state.error = null;
+        updateUI();
+      };
+
+      socket.onclose = () => {
+        console.log("WS Closed");
+        state.isConnected = false;
+        // Auto-reconnect after 3s
+        setTimeout(connectWebSocket, 3000);
+        updateUI();
+      };
+
+      socket.onerror = (err) => {
+        console.error(err);
+        state.isConnected = false;
+        state.error = "Connection failed";
+        updateUI();
+      };
 
       socket.onmessage = (event) => {
-        // Handle incoming messages (TEXT or BINARY)
         if (typeof event.data === "string") {
           try {
             const parsed = JSON.parse(event.data);
             if (parsed.type === "llm_reply") {
-              log("Bot: " + parsed.text);
-            } else if (parsed.type === "llm_error") {
-              log("LLM error: " + parsed.error);
-            } else if (parsed.type === "tts_error") {
-              log("TTS error: " + parsed.error);
-            } else {
-              log("Received: " + event.data);
+              // Text reply received
+            } else if (parsed.type === "llm_error" || parsed.type === "tts_error") {
+              state.error = parsed.error;
+              state.status = 'listening'; // Go back to listening if error
+              updateUI();
             }
-          } catch (e) {
-            log("Received raw text: " + event.data);
-          }
+          } catch (e) { }
         } else {
-          // Binary data -> Audio (TTS)
+          // Binary Audio
           const arrayBuffer = event.data;
           const blob = new Blob([arrayBuffer], { type: "audio/mpeg" });
           const url = URL.createObjectURL(blob);
           queueAudio(url);
         }
       };
-
-      socket.onclose = () => log("WebSocket closed");
-      socket.onerror = (err) => log("WebSocket error: " + err);
-    };
-
-    let isMicActive = false; // Intention to listen
-
-    // 2) Start Listening (Web Speech API)
-    document.getElementById("startMicBtn").onclick = () => {
-      if (!socket || socket.readyState !== WebSocket.OPEN) {
-        log("Socket not connected");
-        return;
-      }
-
-      if (!('webkitSpeechRecognition' in window)) {
-        log("Web Speech API not supported in this browser. Please use Chrome/Edge.");
-        return;
-      }
-
-      isMicActive = true;
-      startRecognitionLoop();
-    };
-
-    function startRecognitionLoop() {
-      if (recognition) {
-        // Already exists
-        try { recognition.start(); } catch (e) { }
-        return;
-      }
-
-      recognition = new webkitSpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = "en-US";
-
-      recognition.onstart = () => {
-        log("Voice recognition started. Speak now.");
-      };
-
-      recognition.onerror = (event) => {
-        if (event.error === 'no-speech') return; // Ignore null errors
-        log("Recognition error: " + event.error);
-      };
-
-      // Auto-restart if we intended to keep listening
-      recognition.onend = () => {
-        log("Voice recognition stopped (onend).");
-        if (isMicActive) {
-          log("Restarting recognition...");
-          // Small delay to prevent CPU spinning if error loop
-          setTimeout(() => {
-            try { recognition.start(); } catch (e) { }
-          }, 100);
-        }
-      };
-
-      recognition.onresult = (event) => {
-        // Clear silence timer on every result (user is speaking)
-        clearTimeout(silenceTimeout);
-
-        let finalTranscript = "";
-        let interimTranscript = "";
-
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          if (event.results[i].isFinal) {
-            finalTranscript += event.results[i][0].transcript;
-          } else {
-            interimTranscript += event.results[i][0].transcript;
-          }
-        }
-
-        // Barge-in Logic
-        if (interimTranscript || finalTranscript) {
-          if (isPlaying || audioQueue.length > 0) {
-            cancelAudio();
-          }
-        }
-
-        // Custom Silence Timer
-        // If we have content, set a timer. If it expires, stop recognition to force 'final'.
-        if (interimTranscript || finalTranscript) {
-          silenceTimeout = setTimeout(() => {
-            log(">> Silence detected (" + (SILENCE_THRESHOLD / 1000) + "s). Stopping recognition to send text.");
-            recognition.stop();
-          }, SILENCE_THRESHOLD);
-        }
-
-        // Send FINAL transcript to server
-        if (finalTranscript) {
-          log("You: " + finalTranscript);
-          socket.send(JSON.stringify({
-            type: "user_text",
-            text: finalTranscript
-          }));
-        }
-      };
-
-      try { recognition.start(); } catch (e) { }
     }
 
-    // 3) Stop Listening
-    document.getElementById("stopMicBtn").onclick = () => {
-      isMicActive = false;
-      if (recognition) {
-        recognition.stop();
-        // Since isMicActive is false, onend won't restart it
-        log("Stopped listening manually.");
-      }
-    };
-
-    // Audio Queue Logic
+    // --- Audio Queue ---
     function queueAudio(url) {
       audioQueue.push(url);
       processQueue();
@@ -459,26 +459,155 @@
       if (isPlaying || audioQueue.length === 0) return;
 
       isPlaying = true;
+      state.status = 'speaking';
+      updateUI();
+
       const url = audioQueue.shift();
-      const audio = new Audio(url);
+      activeAudio = new Audio(url);
 
-      audio.onended = () => {
+      activeAudio.onended = () => {
         isPlaying = false;
+        activeAudio = null;
+        // If more audio, keep speaking, else back to listening
+        if (audioQueue.length > 0) {
+          processQueue();
+        } else {
+          state.status = 'listening';
+          updateUI();
+        }
+      };
+
+      activeAudio.onerror = (err) => {
+        console.error("Audio playback error", err);
+        isPlaying = false;
+        activeAudio = null;
+        state.status = 'listening';
+        updateUI();
         processQueue();
       };
 
-      audio.onerror = (err) => {
-        console.error("Error playing audio:", err);
-        isPlaying = false;
-        processQueue();
-      };
-
-      audio.play().catch((err) => {
-        log("Auto-play blocked? Click page interaction needed. Error: " + err);
-        isPlaying = false;
-        processQueue();
+      activeAudio.play().catch(e => {
+        console.error("Autoplay failed", e);
+        state.error = "Audio blocked. Click page.";
+        updateUI();
       });
     }
+
+    function cancelAudio() {
+      if (activeAudio) {
+        activeAudio.pause();
+        activeAudio = null;
+      }
+      audioQueue = [];
+      isPlaying = false;
+      // If we cancel, we usually go back to listening immediately
+      state.status = 'listening';
+      updateUI();
+    }
+
+    // --- Web Speech API Logic ---
+    function startCall() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        state.error = "Browser not supported (Use Chrome)";
+        updateUI();
+        return;
+      }
+
+      state.isCallActive = true;
+      state.status = 'listening';
+      updateUI();
+
+      if (!recognition) {
+        recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = "en-US";
+
+        recognition.onstart = () => {
+          console.log("Recognition started");
+          state.status = 'listening';
+          updateUI();
+        };
+
+        recognition.onerror = (event) => {
+          if (event.error === 'no-speech') return;
+          console.warn("Recognition error:", event.error);
+          // Don't kill calls on temporary errors
+        };
+
+        recognition.onend = () => {
+          console.log("Recognition ended");
+          // Auto-restart if call is active
+          if (state.isCallActive) {
+            setTimeout(() => {
+              try { recognition.start(); } catch (e) { }
+            }, 100);
+          }
+        };
+
+        recognition.onresult = (event) => {
+          clearTimeout(silenceTimeout);
+
+          let finalTranscript = "";
+          let interimTranscript = "";
+
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            if (event.results[i].isFinal) {
+              finalTranscript += event.results[i][0].transcript;
+            } else {
+              interimTranscript += event.results[i][0].transcript;
+            }
+          }
+
+          // Barge-in
+          if (finalTranscript || interimTranscript) {
+            if (isPlaying || audioQueue.length > 0) {
+              cancelAudio();
+            }
+          }
+
+          // Silence Timer
+          if (finalTranscript || interimTranscript) {
+            silenceTimeout = setTimeout(() => {
+              console.log("Silence detected -> Stop & Send");
+              recognition.stop();
+              // Assume processing now
+              state.status = 'processing';
+              updateUI();
+            }, SILENCE_THRESHOLD);
+          }
+
+          if (finalTranscript) {
+            console.log("Sending:", finalTranscript);
+            if (socket && socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify({ type: 'user_text', text: finalTranscript }));
+            }
+          }
+        };
+      }
+
+      try { recognition.start(); } catch (e) { }
+    }
+
+    function stopCall() {
+      state.isCallActive = false;
+      // Logic to stop everything
+      if (recognition) {
+        recognition.stop();
+      }
+      cancelAudio();
+      state.status = 'idle';
+      updateUI();
+    }
+
+    // --- Event Listeners ---
+    startBtn.addEventListener('click', startCall);
+    endBtn.addEventListener('click', stopCall);
+
+    // Auto-init
+    window.onload = connectWebSocket;
+
   </script>
 </body>
 
