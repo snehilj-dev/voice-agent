@@ -182,7 +182,8 @@ export async function getCounselorReply(
 
 export async function* streamCounselorReply(
   ctx: CounselorContext,
-  userText: string
+  userText: string,
+  signal?: AbortSignal
 ): AsyncGenerator<string, CounselorContext, unknown> {
   // 1) Append user message
   const newHistory: LlmMessage[] = [
@@ -205,17 +206,29 @@ export async function* streamCounselorReply(
   const client = new OpenAI({ apiKey: openaiApiKey });
 
   // 4) Call OpenAI with stream: true
-  const stream = await client.chat.completions.create({
-    model: "gpt-4.1-mini",
-    messages: messagesToSend,
-    temperature: 0.5,
-    max_tokens: 220,
-    stream: true,
-  });
+  // Note: OpenAI Node SDK supports `signal` in the request options (2nd arg) or directly if typed?
+  // Actually, for .create(), it's usually inside options. 
+  // Wait, OpenAI v4: .create(body, options). options has { signal }.
+
+  const stream = await client.chat.completions.create(
+    {
+      model: "gpt-4.1-mini",
+      messages: messagesToSend,
+      temperature: 0.5,
+      max_tokens: 220,
+      stream: true,
+    },
+    { signal }
+  );
 
   let fullReply = "";
 
   for await (const chunk of stream) {
+    if (signal?.aborted) {
+      break;
+      // Note: The stream iterator usually throws AbortError if aborted during await. 
+      // We can double check here.
+    }
     const content = chunk.choices[0]?.delta?.content || "";
     if (content) {
       fullReply += content;
