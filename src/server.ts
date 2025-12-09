@@ -160,8 +160,7 @@ dotenv.config();
 
 import { WebSocketServer, WebSocket } from "ws";
 import type { RawData } from "ws";
-import { createSttSession } from "./sttClient.js";
-import type { SttSession } from "./sttClient.js";
+
 import { createInitialCounselorContext, getCounselorReply } from "./llmClient.js";
 import type { CounselorContext } from "./llmClient.js";
 import { synthesizeSpeech } from "./ttsClient.js";
@@ -199,187 +198,69 @@ const wss = new WebSocketServer({ server });
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
+
 wss.on("connection", async (ws: WebSocket) => {
   console.log("New WebSocket connection");
 
-  let sttSession: SttSession | null = null;
   let counselorCtx: CounselorContext = createInitialCounselorContext();
 
-  // Create STT session per connection
-  try {
-    sttSession = await createSttSession({
-      // onTranscript: (text, isFinal) => {
-      //   console.log(`STT transcript (${isFinal ? "final" : "partial"}):`, text);
+  ws.on("message", async (data: RawData) => {
+    // We expect JSON text messages now
+    if (typeof data !== "string" && !Buffer.isBuffer(data)) {
+      // Should catch text frames (which might be Buffer in ws lib depending on config, but usually Buffer)
+      // If it's a binary audio chunk, we ignore it now.
+    }
 
-      //   ws.send(
-      //     JSON.stringify({
-      //       type: "stt_transcript",
-      //       text,
-      //       isFinal,
-      //     })
-      //   );
-      // },
-      // onTranscript: async (text, isFinal) => {
-      //   console.log(`STT transcript (${isFinal ? "final" : "partial"}):`, text);
+    // Convert Buffer to string if needed
+    const msgString = data.toString();
 
-      //   // 1) Send STT transcript to frontend (for debugging/logging)
-      //   ws.send(
-      //     JSON.stringify({
-      //       type: "stt_transcript",
-      //       text,
-      //       isFinal,
-      //     })
-      //   );
+    try {
+      const parsed = JSON.parse(msgString);
+      if (parsed.type === "user_text") {
+        const userText = parsed.text;
+        console.log("Received text from client:", userText);
 
-      //   // 2) Only trigger LLM on final transcripts
-      //   if (isFinal) {
-      //     try {
-      //       const { reply, updatedContext } = await getCounselorReply(counselorCtx, text);
-      //       counselorCtx = updatedContext;
+        // Trigger LLM directly
+        try {
+          const { reply, updatedContext } = await getCounselorReply(counselorCtx, userText);
+          counselorCtx = updatedContext;
 
-      //       console.log("LLM reply:", reply);
+          console.log("LLM reply:", reply);
 
-      //       // Send the reply text to frontend
-      //       ws.send(
-      //         JSON.stringify({
-      //           type: "llm_reply",
-      //           text: reply,
-      //         })
-      //       );
-      //     } catch (err: any) {
-      //       console.error("LLM error:", err);
-      //       ws.send(
-      //         JSON.stringify({
-      //           type: "llm_error",
-      //           error: err?.message ?? String(err),
-      //         })
-      //       );
-      //     }
-      //   }
-      // },
-      onTranscript: async (text, isFinal) => {
-        console.log(`STT transcript (${isFinal ? "final" : "partial"}):`, text);
+          // Send reply text
+          ws.send(JSON.stringify({
+            type: "llm_reply",
+            text: reply,
+          }));
 
-        // 1) Send STT transcript to frontend (for logging)
-        ws.send(
-          JSON.stringify({
-            type: "stt_transcript",
-            text,
-            isFinal,
-          })
-        );
-
-        // 2) Only trigger LLM on final transcripts
-        if (isFinal) {
+          // TTS
           try {
-            const { reply, updatedContext } = await getCounselorReply(counselorCtx, text);
-            counselorCtx = updatedContext;
-
-            console.log("LLM reply:", reply);
-
-            // Send the reply text to frontend (for logging / debug)
-            ws.send(
-              JSON.stringify({
-                type: "llm_reply",
-                text: reply,
-              })
-            );
-
-            // 3) TTS: Turn reply text into audio (MP3 Buffer)
-            try {
-              const audioBuffer = await synthesizeSpeech(reply);
-
-              // Send audio as BINARY message
-              ws.send(audioBuffer);
-            } catch (ttsErr: any) {
-              console.error("TTS error:", ttsErr);
-              ws.send(
-                JSON.stringify({
-                  type: "tts_error",
-                  error: ttsErr?.message ?? String(ttsErr),
-                })
-              );
-            }
-          } catch (err: any) {
-            console.error("LLM error:", err);
-            ws.send(
-              JSON.stringify({
-                type: "llm_error",
-                error: err?.message ?? String(err),
-              })
-            );
+            const audioBuffer = await synthesizeSpeech(reply);
+            ws.send(audioBuffer);
+          } catch (ttsErr: any) {
+            console.error("TTS error:", ttsErr);
+            ws.send(JSON.stringify({
+              type: "tts_error",
+              error: ttsErr?.message ?? String(ttsErr),
+            }));
           }
-        }
-      },
-
-      onError: (err) => {
-        console.error("STT error:", err);
-        ws.send(
-          JSON.stringify({
-            type: "stt_error",
-            error: err.message,
-          })
-        );
-      },
-      onClose: () => {
-        console.log("STT session closed");
-      },
-    });
-  } catch (err) {
-    console.error("Failed to create STT session:", err);
-    ws.close();
-    return;
-  }
-
-  ws.on("message", (data: RawData) => {
-    const typeDesc = Buffer.isBuffer(data)
-      ? "Buffer"
-      : data instanceof ArrayBuffer
-        ? "ArrayBuffer"
-        : Array.isArray(data)
-          ? "Buffer[]"
-          : typeof data;
-
-    // console.log("Received message type:", typeDesc);
-
-    if (typeof data === "string") {
-      console.log("Received TEXT from client:", data);
-      // optional echo for debugging
-      // ws.send(`Server echo: ${data}`);
-    } else if (Buffer.isBuffer(data)) {
-      // Binary PCM audio chunk
-      // console.log("Received BINARY audio chunk, length:", data.length);
-      if (sttSession) {
-        sttSession.sendAudio(data);
-      }
-    } else if (data instanceof ArrayBuffer) {
-      const buf = Buffer.from(data);
-      if (sttSession) {
-        sttSession.sendAudio(buf);
-      }
-    } else if (Array.isArray(data)) {
-      const totalLen = data.reduce((sum, b) => sum + b.length, 0);
-      console.log("Received Buffer[] chunks, total length:", totalLen);
-      if (sttSession) {
-        for (const b of data) {
-          sttSession.sendAudio(b);
+        } catch (err: any) {
+          console.error("LLM error:", err);
+          ws.send(JSON.stringify({
+            type: "llm_error",
+            error: err?.message ?? String(err),
+          }));
         }
       }
-    } else {
-      console.log("Received unknown data type");
+    } catch (e) {
+      // Not a JSON message or not relevant
     }
   });
 
   ws.on("close", () => {
     console.log("WebSocket connection closed");
-    if (sttSession) {
-      sttSession.close();
-      sttSession = null;
-    }
   });
 });
-
-console.log(`WebSocket server listening on ws://localhost:${PORT}`);
 
 
 
