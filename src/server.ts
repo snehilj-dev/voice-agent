@@ -220,32 +220,73 @@ wss.on("connection", async (ws: WebSocket) => {
         const userText = parsed.text;
         console.log("Received text from client:", userText);
 
-        // Trigger LLM directly
+        // Trigger LLM streaming
         try {
-          const { reply, updatedContext } = await getCounselorReply(counselorCtx, userText);
-          counselorCtx = updatedContext;
+          const stream = streamCounselorReply(counselorCtx, userText);
+          let sentenceBuffer = "";
+          let fullReplyAggregated = "";
 
-          console.log("LLM reply:", reply);
+          for await (const chunk of stream) {
+            sentenceBuffer += chunk;
+            fullReplyAggregated += chunk;
 
-          // Send reply text
-          ws.send(JSON.stringify({
-            type: "llm_reply",
-            text: reply,
-          }));
+            // Simple regex for end of sentence
+            const sentenceMatch = sentenceBuffer.match(/([.!?;\n]+)\s+/);
 
-          // TTS
-          try {
-            const audioBuffer = await synthesizeSpeech(reply);
-            ws.send(audioBuffer);
-          } catch (ttsErr: any) {
-            console.error("TTS error:", ttsErr);
-            ws.send(JSON.stringify({
-              type: "tts_error",
-              error: ttsErr?.message ?? String(ttsErr),
-            }));
+            if (sentenceMatch && sentenceMatch.index !== undefined) {
+              const splitIndex = sentenceMatch.index + sentenceMatch[0].length;
+              const completeSentence = sentenceBuffer.substring(0, splitIndex).trim();
+              sentenceBuffer = sentenceBuffer.substring(splitIndex);
+
+              if (completeSentence) {
+                console.log("Processing sentence:", completeSentence);
+                // Send text chunk to frontend
+                ws.send(JSON.stringify({
+                  type: "llm_reply",
+                  text: completeSentence + " ",
+                }));
+
+                // Generate TTS for this sentence
+                try {
+                  const audioBuffer = await synthesizeSpeech(completeSentence);
+                  ws.send(audioBuffer);
+                } catch (ttsErr: any) {
+                  console.error("TTS error (chunk):", ttsErr);
+                }
+              }
+            }
           }
+
+          // Process remaining buffer
+          if (sentenceBuffer.trim()) {
+            const remaining = sentenceBuffer.trim();
+            console.log("Processing final segment:", remaining);
+
+            ws.send(JSON.stringify({
+              type: "llm_reply",
+              text: remaining,
+            }));
+
+            try {
+              const audioBuffer = await synthesizeSpeech(remaining);
+              ws.send(audioBuffer);
+            } catch (ttsErr: any) {
+              console.error("TTS error (final):", ttsErr);
+            }
+          }
+
+          // Update Context with full reply
+          counselorCtx = {
+            ...counselorCtx,
+            history: [
+              ...counselorCtx.history,
+              { role: "user", content: userText },
+              { role: "assistant", content: fullReplyAggregated }
+            ]
+          };
+
         } catch (err: any) {
-          console.error("LLM error:", err);
+          console.error("Streaming error:", err);
           ws.send(JSON.stringify({
             type: "llm_error",
             error: err?.message ?? String(err),
