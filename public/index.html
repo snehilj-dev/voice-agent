@@ -487,6 +487,7 @@
       };
 
       activeAudio.play().catch(e => {
+        if (e.name === 'AbortError') return; // Ignore intentional stops
         console.error("Autoplay failed", e);
         state.error = "Audio blocked. Click page.";
         updateUI();
