@@ -278,11 +278,28 @@
     let recognition;
     let audioQueue = [];
     let isPlaying = false;
+    let activeAudio = null; // Track current audio
+
+    // Silence Detection
+    let silenceTimeout;
+    const SILENCE_THRESHOLD = 2000; // 2 seconds (Adjustable)
 
     const logEl = document.getElementById("log");
     function log(msg) {
       console.log(msg);
       logEl.textContent += msg + "\n";
+    }
+
+    // Helper: Stop active audio for barge-in
+    function cancelAudio() {
+      if (activeAudio) {
+        activeAudio.pause();
+        activeAudio.currentTime = 0;
+        activeAudio = null;
+      }
+      audioQueue = [];
+      isPlaying = false;
+      log(">> Barge-in: Audio stopped.");
     }
 
     // 1) Connect to WebSocket
@@ -327,6 +344,8 @@
       socket.onerror = (err) => log("WebSocket error: " + err);
     };
 
+    let isMicActive = false; // Intention to listen
+
     // 2) Start Listening (Web Speech API)
     document.getElementById("startMicBtn").onclick = () => {
       if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -339,24 +358,47 @@
         return;
       }
 
+      isMicActive = true;
+      startRecognitionLoop();
+    };
+
+    function startRecognitionLoop() {
+      if (recognition) {
+        // Already exists
+        try { recognition.start(); } catch (e) { }
+        return;
+      }
+
       recognition = new webkitSpeechRecognition();
-      recognition.continuous = true; // Keep listening
-      recognition.interimResults = true; // Show partials
-      recognition.lang = "en-US"; // or 'en-IN'
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = "en-US";
 
       recognition.onstart = () => {
         log("Voice recognition started. Speak now.");
       };
 
       recognition.onerror = (event) => {
+        if (event.error === 'no-speech') return; // Ignore null errors
         log("Recognition error: " + event.error);
       };
 
+      // Auto-restart if we intended to keep listening
       recognition.onend = () => {
-        log("Voice recognition stopped.");
+        log("Voice recognition stopped (onend).");
+        if (isMicActive) {
+          log("Restarting recognition...");
+          // Small delay to prevent CPU spinning if error loop
+          setTimeout(() => {
+            try { recognition.start(); } catch (e) { }
+          }, 100);
+        }
       };
 
       recognition.onresult = (event) => {
+        // Clear silence timer on every result (user is speaking)
+        clearTimeout(silenceTimeout);
+
         let finalTranscript = "";
         let interimTranscript = "";
 
@@ -368,10 +410,20 @@
           }
         }
 
-        // Log partials
-        if (interimTranscript) {
-          // console.log("Partial:", interimTranscript); 
-          // Optional: display in UI
+        // Barge-in Logic
+        if (interimTranscript || finalTranscript) {
+          if (isPlaying || audioQueue.length > 0) {
+            cancelAudio();
+          }
+        }
+
+        // Custom Silence Timer
+        // If we have content, set a timer. If it expires, stop recognition to force 'final'.
+        if (interimTranscript || finalTranscript) {
+          silenceTimeout = setTimeout(() => {
+            log(">> Silence detected (" + (SILENCE_THRESHOLD / 1000) + "s). Stopping recognition to send text.");
+            recognition.stop();
+          }, SILENCE_THRESHOLD);
         }
 
         // Send FINAL transcript to server
@@ -384,14 +436,16 @@
         }
       };
 
-      recognition.start();
-    };
+      try { recognition.start(); } catch (e) { }
+    }
 
     // 3) Stop Listening
     document.getElementById("stopMicBtn").onclick = () => {
+      isMicActive = false;
       if (recognition) {
         recognition.stop();
-        log("Stopped listening.");
+        // Since isMicActive is false, onend won't restart it
+        log("Stopped listening manually.");
       }
     };
 
