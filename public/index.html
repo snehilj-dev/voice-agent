@@ -590,14 +590,29 @@
 
           let fullTranscript = (finalTranscript + interimTranscript).trim().toLowerCase();
 
-          // --- ECHO DETECTION ---
-          // If we are speaking, and the input matches what we are saying, IGNORE IT.
+          // --- ECHO DETECTION (FUZZY) ---
           if (isPlaying && currentSpokenText) {
             const textToMatch = currentSpokenText.toLowerCase();
-            // Simple check: is the input inside the spoken text? (e.g., "Hello" inside "Hello there")
-            if (textToMatch.includes(fullTranscript) || fullTranscript.includes(textToMatch)) {
-              console.log(">> Echo detected (Ignored):", fullTranscript);
-              return; // EXIT EARLY - Do not barge in, do not send.
+            const cleanInput = fullTranscript.toLowerCase();
+
+            // 1. Direct Inclusion (Fast)
+            if (textToMatch.includes(cleanInput) || cleanInput.includes(textToMatch)) {
+              console.log(">> Echo detected (Exact/Substr):", cleanInput);
+              return;
+            }
+
+            // 2. Fuzzy Match (Levenshtein) - For partial/noisy echoes
+            // Only run if input is decent length (> 5 chars) to avoid false positives on short words like "hi"
+            if (cleanInput.length > 5) {
+              const distance = levenshtein(cleanInput, textToMatch);
+              const maxLen = Math.max(cleanInput.length, textToMatch.length);
+              const similarity = 1 - (distance / maxLen);
+
+              // If 60% similar, assume it's an echo
+              if (similarity > 0.6) {
+                console.log(`>> Echo detected (Fuzzy ${Math.round(similarity * 100)}%):`, cleanInput);
+                return;
+              }
             }
           }
 
@@ -654,6 +669,26 @@
     // Auto-init
     window.onload = connectWebSocket;
 
+    // --- Utils ---
+    function levenshtein(a, b) {
+      const matrix = [];
+      for (let i = 0; i <= b.length; i++) { matrix[i] = [i]; }
+      for (let j = 0; j <= a.length; j++) { matrix[0][j] = j; }
+      for (let i = 1; i <= b.length; i++) {
+        for (let j = 1; j <= a.length; j++) {
+          if (b.charAt(i - 1) === a.charAt(j - 1)) {
+            matrix[i][j] = matrix[i - 1][j - 1];
+          } else {
+            matrix[i][j] = Math.min(
+              matrix[i - 1][j - 1] + 1,
+              matrix[i][j - 1] + 1,
+              matrix[i - 1][j] + 1
+            );
+          }
+        }
+      }
+      return matrix[b.length][a.length];
+    }
   </script>
 </body>
 
