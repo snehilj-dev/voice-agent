@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: admissions-voice-agent
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: SARVAM_API_KEY
+        sync: false
+      - key: PORT
+        value: 10000
+    autoDeploy: false

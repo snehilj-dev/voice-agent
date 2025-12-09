@@ -1,0 +1,548 @@
+<!-- <!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admissions Voice Agent</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+    }
+
+    .container {
+      background: white;
+      border-radius: 20px;
+      padding: 40px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      max-width: 500px;
+      width: 100%;
+    }
+
+    h1 {
+      text-align: center;
+      color: #333;
+      margin-bottom: 30px;
+      font-size: 28px;
+    }
+
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .button {
+      padding: 15px 30px;
+      border: none;
+      border-radius: 10px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+    }
+
+    .button:active {
+      transform: translateY(0);
+    }
+
+    .button.primary {
+      background: #667eea;
+      color: white;
+    }
+
+    .button.primary:hover {
+      background: #5568d3;
+    }
+
+    .button.secondary {
+      background: #f0f0f0;
+      color: #333;
+    }
+
+    .button.secondary:hover {
+      background: #e0e0e0;
+    }
+
+    .button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .status {
+      text-align: center;
+      padding: 15px;
+      border-radius: 10px;
+      margin-top: 20px;
+      font-size: 14px;
+      color: #666;
+    }
+
+    .status.connected {
+      background: #d4edda;
+      color: #155724;
+    }
+
+    .status.disconnected {
+      background: #f8d7da;
+      color: #721c24;
+    }
+
+    .status.recording {
+      background: #fff3cd;
+      color: #856404;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🎤 Admissions Voice Agent</h1>
+    <div class="controls">
+      <button id="connectBtn" class="button primary">Connect</button>
+      <button id="micBtn" class="button secondary" disabled>🎤 Start Recording</button>
+      <button id="stopBtn" class="button secondary" disabled>⏹ Stop Recording</button>
+    </div>
+    <div id="status" class="status disconnected">Disconnected</div>
+  </div>
+
+  <script>
+    let ws = null;
+    let mediaRecorder = null;
+    let audioChunks = [];
+
+    const connectBtn = document.getElementById('connectBtn');
+    const micBtn = document.getElementById('micBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const status = document.getElementById('status');
+
+    connectBtn.addEventListener('click', () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+        return;
+      }
+
+      ws = new WebSocket(`ws://localhost:${window.location.port || 3000}`);
+
+      ws.onopen = () => {
+        status.textContent = 'Connected';
+        status.className = 'status connected';
+        connectBtn.textContent = 'Disconnect';
+        micBtn.disabled = false;
+      };
+
+      ws.onmessage = (event) => {
+        console.log('Received:', event.data);
+        // TODO: Handle audio response and play it
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        status.textContent = 'Connection Error';
+        status.className = 'status disconnected';
+      };
+
+      ws.onclose = () => {
+        status.textContent = 'Disconnected';
+        status.className = 'status disconnected';
+        connectBtn.textContent = 'Connect';
+        micBtn.disabled = true;
+        stopBtn.disabled = true;
+      };
+    });
+
+    micBtn.addEventListener('click', async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream);
+        audioChunks = [];
+
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunks.push(event.data);
+            // Send audio chunk to server
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              event.data.arrayBuffer().then(buffer => {
+                ws.send(buffer);
+              });
+            }
+          }
+        };
+
+        mediaRecorder.onstop = () => {
+          stream.getTracks().forEach(track => track.stop());
+        };
+
+        mediaRecorder.start(100); // Send chunks every 100ms
+        status.textContent = 'Recording...';
+        status.className = 'status recording';
+        micBtn.disabled = true;
+        stopBtn.disabled = false;
+      } catch (error) {
+        console.error('Error accessing microphone:', error);
+        alert('Could not access microphone. Please check permissions.');
+      }
+    });
+
+    stopBtn.addEventListener('click', () => {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+        status.textContent = 'Connected';
+        status.className = 'status connected';
+        micBtn.disabled = false;
+        stopBtn.disabled = true;
+      }
+    });
+  </script>
+</body>
+</html>
+ -->
+<!-- <!DOCTYPE html>
+ <html>
+ <head>
+   <meta charset="UTF-8" />
+   <title>Admissions Voice Agent - Test</title>
+ </head>
+ <body>
+   <h1>WebSocket Test</h1>
+   <button id="connectBtn">Connect</button>
+   <button id="sendBtn">Send Test Message</button>
+   <pre id="log"></pre>
+ 
+   <script>
+     let socket;
+ 
+     const logEl = document.getElementById("log");
+     function log(msg) {
+       logEl.textContent += msg + "\n";
+     }
+ 
+     document.getElementById("connectBtn").onclick = () => {
+       socket = new WebSocket("ws://localhost:8080");
+ 
+       socket.onopen = () => log("WebSocket connected");
+       socket.onmessage = (event) => log("Received: " + event.data);
+       socket.onclose = () => log("WebSocket closed");
+       socket.onerror = (err) => log("WebSocket error: " + err);
+     };
+ 
+     document.getElementById("sendBtn").onclick = () => {
+       if (!socket || socket.readyState !== WebSocket.OPEN) {
+         log("Socket not connected");
+         return;
+       }
+       socket.send("Hello from browser");
+     };
+   </script>
+ </body>
+ </html>
+  -->
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Admissions Voice Agent - Audio Test</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+</head>
+
+<body>
+  <h1>Admissions Voice Agent - Audio Test</h1>
+  <button id="connectBtn">Connect WebSocket</button>
+  <button id="startMicBtn">Start Mic Stream</button>
+  <button id="stopMicBtn">Stop Mic Stream</button>
+  <pre id="log"></pre>
+
+  <script>
+    let socket;
+    let audioContext;
+    let mediaStream;
+    let sourceNode;
+    let processorNode;
+
+    const logEl = document.getElementById("log");
+    function log(msg) {
+      console.log(msg);
+      logEl.textContent += msg + "\n";
+    }
+
+    // 1) Connect to WebSocket
+    document.getElementById("connectBtn").onclick = () => {
+      socket = new WebSocket("ws://localhost:8080");
+
+      socket.binaryType = "arraybuffer";
+
+      socket.onopen = () => log("WebSocket connected");
+      // socket.onmessage = (event) => {
+      //   try {
+      //     const data = typeof event.data === "string" ? event.data : null;
+
+      //     if (!data) {
+      //       log("Received from server: [binary]");
+      //       return;
+      //     }
+
+      //     let parsed;
+      //     try {
+      //       parsed = JSON.parse(data);
+      //     } catch {
+      //       // Not JSON, just log raw
+      //       log("Received from server (raw): " + data);
+      //       return;
+      //     }
+
+      //     if (parsed.type === "stt_transcript") {
+      //       log(
+      //         `STT (${parsed.isFinal ? "final" : "partial"}): ${parsed.text}`
+      //       );
+      //     } else if (parsed.type === "stt_error") {
+      //       log("STT error: " + parsed.error);
+      //     } else {
+      //       log("Received from server (unknown type): " + data);
+      //     }
+      //   } catch (err) {
+      //     log("Error handling server message: " + err);
+      //   }
+      // };
+      // socket.onmessage = (event) => {
+      //   try {
+      //     const data = typeof event.data === "string" ? event.data : null;
+
+      //     if (!data) {
+      //       log("Received from server: [binary]");
+      //       return;
+      //     }
+
+      //     let parsed;
+      //     try {
+      //       parsed = JSON.parse(data);
+      //     } catch {
+      //       // Not JSON, just log raw
+      //       log("Received from server (raw): " + data);
+      //       return;
+      //     }
+
+      //     if (parsed.type === "stt_transcript") {
+      //       log(`STT (${parsed.isFinal ? "final" : "partial"}): ${parsed.text}`);
+      //     } else if (parsed.type === "stt_error") {
+      //       log("STT error: " + parsed.error);
+      //     } else if (parsed.type === "llm_reply") {
+      //       log("Bot: " + parsed.text);
+      //     } else if (parsed.type === "llm_error") {
+      //       log("LLM error: " + parsed.error);
+      //     } else {
+      //       log("Received from server (unknown type): " + data);
+      //     }
+      //   } catch (err) {
+      //     log("Error handling server message: " + err);
+      //   }
+      // };
+      socket.onmessage = (event) => {
+        // If it's a string, assume JSON with type field
+        if (typeof event.data === "string") {
+          const data = event.data;
+          let parsed;
+          try {
+            parsed = JSON.parse(data);
+          } catch {
+            log("Received from server (raw string): " + data);
+            return;
+          }
+
+          if (parsed.type === "stt_transcript") {
+            log(`STT (${parsed.isFinal ? "final" : "partial"}): ${parsed.text}`);
+          } else if (parsed.type === "stt_error") {
+            log("STT error: " + parsed.error);
+          } else if (parsed.type === "llm_reply") {
+            log("Bot: " + parsed.text);
+          } else if (parsed.type === "llm_error") {
+            log("LLM error: " + parsed.error);
+          } else if (parsed.type === "tts_error") {
+            log("TTS error: " + parsed.error);
+          } else {
+            log("Received from server (unknown JSON type): " + data);
+          }
+        } else {
+          // Non-string → treat as audio (ArrayBuffer)
+          // Depending on browser, this may be an ArrayBuffer or Blob.
+          let arrayBufferPromise;
+
+          if (event.data instanceof ArrayBuffer) {
+            arrayBufferPromise = Promise.resolve(event.data);
+          } else if (event.data instanceof Blob) {
+            arrayBufferPromise = event.data.arrayBuffer();
+          } else {
+            log("Received non-string, non-Blob data from server");
+            return;
+          }
+
+          arrayBufferPromise.then((arrayBuffer) => {
+            // We requested MP3 from Azure, so use audio/mpeg
+            const blob = new Blob([arrayBuffer], { type: "audio/mpeg" });
+            const url = URL.createObjectURL(blob);
+
+            queueAudio(url);
+          });
+        }
+      };
+
+      let audioQueue = [];
+      let isPlaying = false;
+
+      function queueAudio(url) {
+        audioQueue.push(url);
+        processQueue();
+      }
+
+      function processQueue() {
+        if (isPlaying || audioQueue.length === 0) return;
+
+        isPlaying = true;
+        const url = audioQueue.shift();
+        const audio = new Audio(url);
+
+        audio.onended = () => {
+          isPlaying = false;
+          processQueue(); // Play next
+        };
+
+        audio.onerror = (err) => {
+          console.error("Error playing audio:", err);
+          isPlaying = false;
+          processQueue(); // proceed to next even if error
+        };
+
+        audio.play().catch((err) => {
+          log("Error playing audio: " + err);
+          isPlaying = false;
+          processQueue();
+        });
+      }
+
+      // socket.onmessage = (event) => {
+      //   log("Received from server: " + (typeof event.data === "string" ? event.data : "[binary]"));
+      // };
+      socket.onclose = () => log("WebSocket closed");
+      socket.onerror = (err) => log("WebSocket error: " + err);
+    };
+
+    // 2) Start mic streaming
+    document.getElementById("startMicBtn").onclick = async () => {
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        log("Socket not connected");
+        return;
+      }
+
+      try {
+        // Ask for mic permission
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        log("Microphone access granted");
+
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        sourceNode = audioContext.createMediaStreamSource(mediaStream);
+
+        // ScriptProcessor is deprecated in spec but still widely supported; good enough for demo.
+        const bufferSize = 2048;
+        const numInputChannels = 1;
+        const numOutputChannels = 1;
+        processorNode = audioContext.createScriptProcessor(bufferSize, numInputChannels, numOutputChannels);
+
+        //   processorNode.onaudioprocess = (audioProcessingEvent) => {
+        //     const inputBuffer = audioProcessingEvent.inputBuffer;
+        //     const inputData = inputBuffer.getChannelData(0); // mono
+
+        //     // Convert Float32 [-1,1] to 16-bit PCM
+        //     const pcmBuffer = new ArrayBuffer(inputData.length * 2);
+        //     const pcmView = new DataView(pcmBuffer);
+
+        //     for (let i = 0; i < inputData.length; i++) {
+        //       let sample = inputData[i];
+        //       // clamp
+        //       if (sample > 1) sample = 1;
+        //       else if (sample < -1) sample = -1;
+        //       // scale to 16-bit signed int
+        //       sample = sample * 0x7fff;
+        //       pcmView.setInt16(i * 2, sample, true); // little-endian
+        //     }
+
+        //     if (socket && socket.readyState === WebSocket.OPEN) {
+        //       socket.send(pcmBuffer);
+        //     }
+        //   };
+        processorNode.onaudioprocess = (audioProcessingEvent) => {
+          const inputBuffer = audioProcessingEvent.inputBuffer;
+          const inputData = inputBuffer.getChannelData(0); // mono
+
+          const pcmBuffer = new ArrayBuffer(inputData.length * 2);
+          const pcmView = new DataView(pcmBuffer);
+
+          for (let i = 0; i < inputData.length; i++) {
+            let sample = inputData[i];
+            if (sample > 1) sample = 1;
+            else if (sample < -1) sample = -1;
+            sample = sample * 0x7fff;
+            pcmView.setInt16(i * 2, sample, true);
+          }
+
+          console.log("Sending audio chunk, byteLength:", pcmBuffer.byteLength, "type:", typeof pcmBuffer);
+
+          if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(pcmBuffer);
+          }
+        };
+
+        sourceNode.connect(processorNode);
+        processorNode.connect(audioContext.destination); // or audioContext.destination if you want, but you can skip if echo is weird
+
+        log("Microphone streaming started");
+      }
+      catch (err) {
+        console.error(err);
+        log("Error accessing microphone: " + err);
+      }
+    };
+
+    // 3) Stop mic streaming
+    document.getElementById("stopMicBtn").onclick = () => {
+      if (processorNode) {
+        processorNode.disconnect();
+        processorNode = null;
+      }
+      if (sourceNode) {
+        sourceNode.disconnect();
+        sourceNode = null;
+      }
+      if (mediaStream) {
+        mediaStream.getTracks().forEach((track) => track.stop());
+        mediaStream = null;
+      }
+      if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+      }
+      log("Microphone streaming stopped");
+    };
+  </script>
+</body>
+
+</html>
