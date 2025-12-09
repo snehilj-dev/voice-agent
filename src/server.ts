@@ -204,156 +204,148 @@ wss.on("connection", async (ws: WebSocket) => {
 
   let counselorCtx: CounselorContext = createInitialCounselorContext();
 
-  // Convert Buffer to string if needed
-  const msgString = data.toString();
+  // Let's declare it in the connection scope
+  let currentController: AbortController | null = null;
 
-  // Track active controller
-  // @ts-ignore - we can attach it to ws object or just use a local map if simpler, but ws is persistent in this closure.
-  // actually, `ws` is the connection object. We can store it on a WeakMap or just a variable in this scope.
-  // Since this callback is a closure over `ws`, we can just use a variable `abortController` declared outside `ws.on("message")`.
-}); // oops, strict mode.
+  ws.on("message", async (data: RawData) => {
+    // We expect JSON text messages now
+    if (typeof data !== "string" && !Buffer.isBuffer(data)) {
+      return;
+    }
+    const msgString = data.toString();
 
-// Let's declare it in the connection scope
-let currentController: AbortController | null = null;
+    try {
+      const parsed = JSON.parse(msgString);
+      if (parsed.type === "user_text") {
+        const userText = parsed.text;
+        console.log("Received text from client:", userText);
 
-ws.on("message", async (data: RawData) => {
-  // We expect JSON text messages now
-  if (typeof data !== "string" && !Buffer.isBuffer(data)) {
-    return;
-  }
-  const msgString = data.toString();
+        // 1) ABORT PREVIOUS STREAM
+        if (currentController) {
+          console.log("Barge-in detected: aborting previous response.");
+          currentController.abort();
+          currentController = null;
+        }
 
-  try {
-    const parsed = JSON.parse(msgString);
-    if (parsed.type === "user_text") {
-      const userText = parsed.text;
-      console.log("Received text from client:", userText);
+        // 2) CREATE NEW CONTROLLER
+        currentController = new AbortController();
+        const signal = currentController.signal;
 
-      // 1) ABORT PREVIOUS STREAM
-      if (currentController) {
-        console.log("Barge-in detected: aborting previous response.");
-        currentController.abort();
-        currentController = null;
-      }
+        // Trigger LLM streaming
+        try {
+          const stream = streamCounselorReply(counselorCtx, userText, signal);
+          let sentenceBuffer = "";
+          let fullReplyAggregated = "";
 
-      // 2) CREATE NEW CONTROLLER
-      currentController = new AbortController();
-      const signal = currentController.signal;
-
-      // Trigger LLM streaming
-      try {
-        const stream = streamCounselorReply(counselorCtx, userText, signal);
-        let sentenceBuffer = "";
-        let fullReplyAggregated = "";
-
-        for await (const chunk of stream) {
-          if (signal.aborted) break;
-
-          sentenceBuffer += chunk;
-          fullReplyAggregated += chunk;
-
-          // Simple regex for end of sentence
-          const sentenceMatch = sentenceBuffer.match(/([.!?;\n]+)\s+/);
-
-          if (sentenceMatch && sentenceMatch.index !== undefined) {
-            const splitIndex = sentenceMatch.index + sentenceMatch[0].length;
-            const completeSentence = sentenceBuffer.substring(0, splitIndex).trim();
-            sentenceBuffer = sentenceBuffer.substring(splitIndex);
-
-            // Double check abort before sending/TTS
+          for await (const chunk of stream) {
             if (signal.aborted) break;
 
-            if (completeSentence) {
-              console.log("Processing sentence:", completeSentence);
-              // Send text chunk to frontend
-              ws.send(JSON.stringify({
-                type: "llm_reply",
-                text: completeSentence + " ",
-              }));
+            sentenceBuffer += chunk;
+            fullReplyAggregated += chunk;
 
-              // Generate TTS for this sentence
-              try {
-                // Check if we should even start TTS
-                if (!signal.aborted) {
-                  const audioBuffer = await synthesizeSpeech(completeSentence);
+            // Simple regex for end of sentence
+            const sentenceMatch = sentenceBuffer.match(/([.!?;\n]+)\s+/);
+
+            if (sentenceMatch && sentenceMatch.index !== undefined) {
+              const splitIndex = sentenceMatch.index + sentenceMatch[0].length;
+              const completeSentence = sentenceBuffer.substring(0, splitIndex).trim();
+              sentenceBuffer = sentenceBuffer.substring(splitIndex);
+
+              // Double check abort before sending/TTS
+              if (signal.aborted) break;
+
+              if (completeSentence) {
+                console.log("Processing sentence:", completeSentence);
+                // Send text chunk to frontend
+                ws.send(JSON.stringify({
+                  type: "llm_reply",
+                  text: completeSentence + " ",
+                }));
+
+                // Generate TTS for this sentence
+                try {
+                  // Check if we should even start TTS
                   if (!signal.aborted) {
-                    ws.send(audioBuffer);
+                    const audioBuffer = await synthesizeSpeech(completeSentence);
+                    if (!signal.aborted) {
+                      ws.send(audioBuffer);
+                    }
                   }
+                } catch (ttsErr: any) {
+                  console.error("TTS error (chunk):", ttsErr);
                 }
-              } catch (ttsErr: any) {
-                console.error("TTS error (chunk):", ttsErr);
               }
             }
           }
-        }
 
-        // Process remaining buffer if NOT aborted
-        if (!signal.aborted && sentenceBuffer.trim()) {
-          const remaining = sentenceBuffer.trim();
-          console.log("Processing final segment:", remaining);
+          // Process remaining buffer if NOT aborted
+          if (!signal.aborted && sentenceBuffer.trim()) {
+            const remaining = sentenceBuffer.trim();
+            console.log("Processing final segment:", remaining);
 
-          ws.send(JSON.stringify({
-            type: "llm_reply",
-            text: remaining,
-          }));
+            ws.send(JSON.stringify({
+              type: "llm_reply",
+              text: remaining,
+            }));
 
-          try {
-            const audioBuffer = await synthesizeSpeech(remaining);
-            if (!signal.aborted) {
-              ws.send(audioBuffer);
+            try {
+              const audioBuffer = await synthesizeSpeech(remaining);
+              if (!signal.aborted) {
+                ws.send(audioBuffer);
+              }
+            } catch (ttsErr: any) {
+              console.error("TTS error (final):", ttsErr);
             }
-          } catch (ttsErr: any) {
-            console.error("TTS error (final):", ttsErr);
           }
-        }
 
-        // Update Context with full reply (even if partial/aborted, we update!)
-        counselorCtx = {
-          ...counselorCtx,
-          history: [
-            ...counselorCtx.history,
-            { role: "user", content: userText },
-            { role: "assistant", content: fullReplyAggregated }
-          ]
-        };
-
-      } catch (err: any) {
-        // Check if it was an abort error
-        if (err.name === 'AbortError' || signal.aborted) {
-          console.log("Stream aborted.");
-          // Ensure context is saved even on error/throw
+          // Update Context with full reply (even if partial/aborted, we update!)
           counselorCtx = {
             ...counselorCtx,
             history: [
               ...counselorCtx.history,
               { role: "user", content: userText },
-              // Use whatever we captured so far
-              // NOTE: fullReplyAggregated might be empty if variable scope issue, 
-              // but we defined it inside `try`. 
-              // Actually, we can't access `fullReplyAggregated` here easily unless we scope it out.
-              // But the loop breaks on signal.aborted usually without throwing.
-              // If OpenAI throws AbortError, we might lose `fullReplyAggregated` if we don't scope it up.
-              // Let's rely on the loop `break` logic mostly. 
+              { role: "assistant", content: fullReplyAggregated }
             ]
           };
-        } else {
-          console.error("Streaming error:", err);
-          ws.send(JSON.stringify({
-            type: "llm_error",
-            error: err?.message ?? String(err),
-          }));
+
+        } catch (err: any) {
+          // Check if it was an abort error
+          if (err.name === 'AbortError' || signal.aborted) {
+            console.log("Stream aborted.");
+            // Ensure context is saved even on error/throw
+            counselorCtx = {
+              ...counselorCtx,
+              history: [
+                ...counselorCtx.history,
+                { role: "user", content: userText },
+                // Use whatever we captured so far
+                // NOTE: fullReplyAggregated might be empty if variable scope issue, 
+                // but we defined it inside `try`. 
+                // Actually, we can't access `fullReplyAggregated` here easily unless we scope it out.
+                // But the loop breaks on signal.aborted usually without throwing.
+                // If OpenAI throws AbortError, we might lose `fullReplyAggregated` if we don't scope it up.
+                // Let's rely on the loop `break` logic mostly. 
+              ]
+            };
+          } else {
+            console.error("Streaming error:", err);
+            ws.send(JSON.stringify({
+              type: "llm_error",
+              error: err?.message ?? String(err),
+            }));
+          }
         }
       }
+    } catch (e) {
+      // Not a JSON message or not relevant
     }
-  } catch (e) {
-    // Not a JSON message or not relevant
-  }
+  });
+
+  ws.on("close", () => {
+    console.log("WebSocket connection closed");
+  });
 });
 
-ws.on("close", () => {
-  console.log("WebSocket connection closed");
-});
-});
 
 
 
