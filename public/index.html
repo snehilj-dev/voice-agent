@@ -340,6 +340,10 @@
     let silenceTimeout = null;
     const SILENCE_THRESHOLD = 2000; // 2 seconds
 
+    // Echo Cancellation
+    let aecStream = null;
+    let currentSpokenText = ""; // Text currently being spoken by bot
+
     // --- UI Update Helper ---
     function updateUI() {
       // connection
@@ -432,7 +436,13 @@
           try {
             const parsed = JSON.parse(event.data);
             if (parsed.type === "llm_reply") {
-              // Text reply received
+              // Store text for echo detection
+              // We append to a temporary buffer or queue if needed, 
+              // but for now, simple "last received" is okay or we track per audio.
+              // Ideally, we attach text to the audio URL, but let's simplify:
+              // We can't easily sync text to audio blobs here without complex queueing.
+              // IMPROVEMENT: For now, we will relax the check to just "isSpeaking".
+              currentSpokenText = parsed.text;
             } else if (parsed.type === "llm_error" || parsed.type === "tts_error") {
               state.error = parsed.error;
               state.status = 'listening'; // Go back to listening if error
@@ -473,6 +483,7 @@
           processQueue();
         } else {
           state.status = 'listening';
+          currentSpokenText = ""; // Clear text when done
           updateUI();
         }
       };
@@ -501,18 +512,34 @@
       }
       audioQueue = [];
       isPlaying = false;
+      currentSpokenText = ""; // Clear text on cancel
       // If we cancel, we usually go back to listening immediately
       state.status = 'listening';
       updateUI();
     }
 
     // --- Web Speech API Logic ---
-    function startCall() {
+    async function startCall() {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SpeechRecognition) {
         state.error = "Browser not supported (Use Chrome)";
         updateUI();
         return;
+      }
+
+      // 1. AEC Hack: Request mic with echoCancellation to force Hardware AEC
+      try {
+        aecStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
+        // We don't play this stream, just hold it open.
+        console.log("AEC Stream active");
+      } catch (err) {
+        console.warn("Could not get AEC stream", err);
       }
 
       state.isCallActive = true;
@@ -561,6 +588,19 @@
             }
           }
 
+          let fullTranscript = (finalTranscript + interimTranscript).trim().toLowerCase();
+
+          // --- ECHO DETECTION ---
+          // If we are speaking, and the input matches what we are saying, IGNORE IT.
+          if (isPlaying && currentSpokenText) {
+            const textToMatch = currentSpokenText.toLowerCase();
+            // Simple check: is the input inside the spoken text? (e.g., "Hello" inside "Hello there")
+            if (textToMatch.includes(fullTranscript) || fullTranscript.includes(textToMatch)) {
+              console.log(">> Echo detected (Ignored):", fullTranscript);
+              return; // EXIT EARLY - Do not barge in, do not send.
+            }
+          }
+
           // Barge-in
           if (finalTranscript || interimTranscript) {
             if (isPlaying || audioQueue.length > 0) {
@@ -596,6 +636,11 @@
       // Logic to stop everything
       if (recognition) {
         recognition.stop();
+      }
+      // Stop AEC Stream
+      if (aecStream) {
+        aecStream.getTracks().forEach(track => track.stop());
+        aecStream = null;
       }
       cancelAudio();
       state.status = 'idle';
