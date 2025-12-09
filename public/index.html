@@ -288,7 +288,12 @@
 
     // 1) Connect to WebSocket
     document.getElementById("connectBtn").onclick = () => {
-      socket = new WebSocket("ws://localhost:8080");
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const host = window.location.host;
+      const wsUrl = `${protocol}//${host}`;
+      console.log("Connecting to WebSocket at:", wsUrl);
+
+      socket = new WebSocket(wsUrl);
 
       socket.binaryType = "arraybuffer";
 
