@@ -161,7 +161,7 @@ dotenv.config();
 import { WebSocketServer, WebSocket } from "ws";
 import type { RawData } from "ws";
 
-import { createInitialCounselorContext, getCounselorReply } from "./llmClient.js";
+import { createInitialCounselorContext, getCounselorReply, streamCounselorReply } from "./llmClient.js";
 import type { CounselorContext } from "./llmClient.js";
 import { synthesizeSpeech } from "./ttsClient.js";
 

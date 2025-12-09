@@ -177,3 +177,60 @@ export async function getCounselorReply(
 
   return { reply: replyText, updatedContext };
 }
+
+// ---- Streaming function: streamCounselorReply ----
+
+export async function* streamCounselorReply(
+  ctx: CounselorContext,
+  userText: string
+): AsyncGenerator<string, CounselorContext, unknown> {
+  // 1) Append user message
+  const newHistory: LlmMessage[] = [
+    ...ctx.history,
+    { role: "user", content: userText },
+  ];
+
+  // 2) Keep only last few turns + system
+  const MAX_TURNS = 8;
+  const systemMessages = newHistory.filter((m) => m.role === "system");
+  const nonSystem = newHistory.filter((m) => m.role !== "system");
+  const trimmedNonSystem = nonSystem.slice(-MAX_TURNS);
+  const messagesToSend: LlmMessage[] = [...systemMessages, ...trimmedNonSystem];
+
+  // 3) Check API key
+  const openaiApiKey = process.env.OPENAI_API_KEY;
+  if (!openaiApiKey) {
+    throw new Error("OPENAI_API_KEY not set in .env");
+  }
+  const client = new OpenAI({ apiKey: openaiApiKey });
+
+  // 4) Call OpenAI with stream: true
+  const stream = await client.chat.completions.create({
+    model: "gpt-4.1-mini",
+    messages: messagesToSend,
+    temperature: 0.5,
+    max_tokens: 220,
+    stream: true,
+  });
+
+  let fullReply = "";
+
+  for await (const chunk of stream) {
+    const content = chunk.choices[0]?.delta?.content || "";
+    if (content) {
+      fullReply += content;
+      yield content;
+    }
+  }
+
+  // 5) Return updated context as the final return value of the generator
+  const updatedHistory: LlmMessage[] = [
+    ...messagesToSend,
+    { role: "assistant", content: fullReply },
+  ];
+
+  return {
+    ...ctx,
+    history: updatedHistory,
+  };
+}
