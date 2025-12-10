@@ -465,6 +465,14 @@
         } else {
           // Binary Audio
           const arrayBuffer = event.data;
+
+          // Validate audio data
+          if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+            console.error("Received empty audio data from server");
+            return;
+          }
+
+          console.log(`Received audio: ${arrayBuffer.byteLength} bytes`);
           const blob = new Blob([arrayBuffer], { type: "audio/mpeg" });
           const url = URL.createObjectURL(blob);
           queueAudio(url);
