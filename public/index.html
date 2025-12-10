@@ -776,12 +776,16 @@
           consecutiveSilenceFrames++;
           if (consecutiveSilenceFrames >= SILENCE_FRAMES_THRESHOLD) {
             // User stopped speaking!
-            console.log("VAD: Silence detected, stopping recognition");
+            console.log("VAD: Silence detected");
+            // TEMPORARILY DISABLED: VAD was stopping recognition too aggressively
+            // Relying on fallback timer instead until we can properly tune sensitivity
+            /*
             if (recognition && state.isCallActive) {
               recognition.stop();
               state.status = 'processing';
               updateUI();
             }
+            */
             consecutiveSilenceFrames = 0; // Reset
           }
         } else {
