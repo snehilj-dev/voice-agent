@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Voice AI Agent</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.min.js"></script>
   <style>
     :root {
       --primary-color: #667eea;
@@ -344,6 +345,15 @@
     let aecStream = null;
     let currentSpokenText = ""; // Text currently being spoken by bot
 
+    // Silero VAD
+    let vadModel = null;
+    let vadContext = null;
+    let vadProcessor = null;
+    let vadState = null; // VAD internal state
+    let vadSampleRate = 16000;
+    let consecutiveSilenceFrames = 0;
+    const SILENCE_FRAMES_THRESHOLD = 3; // ~96ms of silence
+
     // --- UI Update Helper ---
     function updateUI() {
       // connection
@@ -538,6 +548,11 @@
         });
         // We don't play this stream, just hold it open.
         console.log("AEC Stream active");
+
+        // Setup VAD audio processing if model is loaded
+        if (vadModel) {
+          await setupVADAudioProcessing();
+        }
       } catch (err) {
         console.warn("Could not get AEC stream", err);
       }
@@ -623,16 +638,8 @@
             }
           }
 
-          // Silence Timer
-          if (finalTranscript || interimTranscript) {
-            silenceTimeout = setTimeout(() => {
-              console.log("Silence detected -> Stop & Send");
-              recognition.stop();
-              // Assume processing now
-              state.status = 'processing';
-              updateUI();
-            }, SILENCE_THRESHOLD);
-          }
+          // NOTE: Silence detection is now handled by Silero VAD (see processAudioForVAD)
+          // The old 2-second timer has been replaced with AI-powered detection (~200ms)
 
           if (finalTranscript) {
             console.log("Sending:", finalTranscript);
@@ -657,6 +664,16 @@
         aecStream.getTracks().forEach(track => track.stop());
         aecStream = null;
       }
+      // Stop VAD Processing
+      if (vadProcessor) {
+        vadProcessor.disconnect();
+        vadProcessor = null;
+      }
+      if (vadContext) {
+        vadContext.close();
+        vadContext = null;
+      }
+      consecutiveSilenceFrames = 0; // Reset VAD state
       cancelAudio();
       state.status = 'idle';
       updateUI();
@@ -666,8 +683,100 @@
     startBtn.addEventListener('click', startCall);
     endBtn.addEventListener('click', stopCall);
 
+    // --- Silero VAD Functions ---
+    async function initVAD() {
+      try {
+        console.log("Loading Silero VAD model...");
+        vadModel = await ort.InferenceSession.create(
+          "https://github.com/snakers4/silero-vad/raw/master/files/silero_vad.onnx"
+        );
+
+        // Initialize VAD state (required by model)
+        const h = new ort.Tensor("float32", new Float32Array(2 * 64).fill(0), [2, 1, 64]);
+        const c = new ort.Tensor("float32", new Float32Array(2 * 64).fill(0), [2, 1, 64]);
+        vadState = { h, c };
+
+        console.log("Silero VAD loaded successfully");
+      } catch (err) {
+        console.warn("Could not load VAD model, falling back to timer:", err);
+      }
+    }
+
+    async function processAudioForVAD(audioData) {
+      if (!vadModel || !state.isCallActive) return;
+
+      try {
+        // Prepare input tensor (512 samples at 16kHz)
+        const audioTensor = new ort.Tensor("float32", audioData, [1, audioData.length]);
+        const sr = new ort.Tensor("int64", BigInt64Array.from([BigInt(vadSampleRate)]));
+
+        // Run VAD model
+        const inputs = {
+          input: audioTensor,
+          h: vadState.h,
+          c: vadState.c,
+          sr: sr
+        };
+
+        const output = await vadModel.run(inputs);
+        const speechProb = output.output.data[0]; // 0.0 to 1.0
+
+        // Update state for next iteration
+        vadState.h = output.hn;
+        vadState.c = output.cn;
+
+        // Detect silence
+        if (speechProb < 0.5) {
+          consecutiveSilenceFrames++;
+          if (consecutiveSilenceFrames >= SILENCE_FRAMES_THRESHOLD) {
+            // User stopped speaking!
+            console.log("VAD: Silence detected, stopping recognition");
+            if (recognition && state.isCallActive) {
+              recognition.stop();
+              state.status = 'processing';
+              updateUI();
+            }
+            consecutiveSilenceFrames = 0; // Reset
+          }
+        } else {
+          consecutiveSilenceFrames = 0; // Reset on speech
+        }
+      } catch (err) {
+        console.error("VAD processing error:", err);
+      }
+    }
+
+    async function setupVADAudioProcessing() {
+      if (!aecStream) return;
+
+      try {
+        vadContext = new AudioContext({ sampleRate: vadSampleRate });
+        const source = vadContext.createMediaStreamSource(aecStream);
+
+        // Create ScriptProcessor for audio chunks
+        vadProcessor = vadContext.createScriptProcessor(512, 1, 1);
+
+        vadProcessor.onaudioprocess = (e) => {
+          if (!state.isCallActive) return;
+
+          const inputData = e.inputBuffer.getChannelData(0);
+          processAudioForVAD(inputData);
+        };
+
+        source.connect(vadProcessor);
+        vadProcessor.connect(vadContext.destination);
+
+        console.log("VAD audio processing started");
+      } catch (err) {
+        console.error("Could not setup VAD audio processing:", err);
+      }
+    }
+
     // Auto-init
-    window.onload = connectWebSocket;
+    window.onload = async () => {
+      connectWebSocket();
+      await initVAD(); // Load VAD model on page load
+    };
 
     // --- Utils ---
     function levenshtein(a, b) {
