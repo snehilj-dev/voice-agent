@@ -530,8 +530,8 @@
       }
       audioQueue = [];
       isPlaying = false;
-      currentSpokenText = ""; // Clear text on cancel
-      // If we cancel, we usually go back to listening immediately
+      // DON'T clear currentSpokenText here - let the timeout handle it
+      // This preserves echo protection during barge-in
       state.status = 'listening';
       updateUI();
     }
@@ -745,7 +745,10 @@
         vadContext = null;
       }
       consecutiveSilenceFrames = 0; // Reset VAD state
+      vadEnabled = false; // Reset VAD activation
       cancelAudio();
+      currentSpokenText = ""; // Clear echo protection on call end
+      clearTimeout(echoTimeout); // Clear any pending echo timeout
       state.status = 'idle';
       updateUI();
     }
