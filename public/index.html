@@ -722,20 +722,20 @@
         const audioTensor = new ort.Tensor("float32", audioData, [1, audioData.length]);
         const sr = new ort.Tensor("int64", BigInt64Array.from([BigInt(vadSampleRate)]));
 
-        // Run VAD model
+        // Hugging Face model expects 'state' instead of separate h/c
         const inputs = {
           input: audioTensor,
-          h: vadState.h,
-          c: vadState.c,
+          state: vadState.h, // Use h as state (model will handle internally)
           sr: sr
         };
 
         const output = await vadModel.run(inputs);
         const speechProb = output.output.data[0]; // 0.0 to 1.0
 
-        // Update state for next iteration
-        vadState.h = output.hn;
-        vadState.c = output.cn;
+        // Update state for next iteration (if model returns stateN)
+        if (output.stateN) {
+          vadState.h = output.stateN;
+        }
 
         // Detect silence
         if (speechProb < 0.5) {
