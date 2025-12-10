@@ -488,6 +488,16 @@
       const url = audioQueue.shift();
       activeAudio = new Audio(url);
 
+      // PRODUCTION FIX: Stop recognition while bot speaks (100% echo prevention)
+      if (recognition && state.isCallActive) {
+        try {
+          recognition.stop();
+          console.log("Mic muted: Bot is speaking");
+        } catch (e) {
+          // Recognition might already be stopped
+        }
+      }
+
       activeAudio.onended = () => {
         isPlaying = false;
         activeAudio = null;
@@ -503,6 +513,18 @@
             console.log("Echo protection cleared");
           }, 3000);
           updateUI();
+
+          // PRODUCTION FIX: Restart recognition after bot finishes speaking
+          if (state.isCallActive) {
+            setTimeout(() => {
+              try {
+                recognition.start();
+                console.log("Mic unmuted: Ready to listen");
+              } catch (e) {
+                console.error("Failed to restart recognition:", e);
+              }
+            }, 500); // 500ms delay to ensure audio is fully cleared
+          }
         }
       };
 
