@@ -352,7 +352,8 @@
     let vadState = null; // VAD internal state
     let vadSampleRate = 16000;
     let consecutiveSilenceFrames = 0;
-    const SILENCE_FRAMES_THRESHOLD = 3; // ~96ms of silence
+    const SILENCE_FRAMES_THRESHOLD = 8; // ~256ms of silence (less sensitive)
+    const SPEECH_THRESHOLD = 0.3; // Lower = easier to detect speech
 
     // --- UI Update Helper ---
     function updateUI() {
@@ -737,7 +738,7 @@
         }
 
         // Detect silence
-        if (speechProb < 0.5) {
+        if (speechProb < SPEECH_THRESHOLD) {
           consecutiveSilenceFrames++;
           if (consecutiveSilenceFrames >= SILENCE_FRAMES_THRESHOLD) {
             // User stopped speaking!
