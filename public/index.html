@@ -526,6 +526,8 @@
     function cancelAudio() {
       if (activeAudio) {
         activeAudio.pause();
+        activeAudio.currentTime = 0; // Reset to beginning
+        activeAudio.src = ''; // Clear source to fully stop
         activeAudio = null;
       }
       audioQueue = [];
