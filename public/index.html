@@ -496,7 +496,12 @@
           processQueue();
         } else {
           state.status = 'listening';
-          currentSpokenText = ""; // Clear text when done
+          // Clear echo text after 3 seconds (protects against tail-end echoes)
+          clearTimeout(echoTimeout);
+          echoTimeout = setTimeout(() => {
+            currentSpokenText = "";
+            console.log("Echo protection cleared");
+          }, 3000);
           updateUI();
         }
       };
