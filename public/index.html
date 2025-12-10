@@ -507,11 +507,19 @@
       };
 
       activeAudio.onerror = (err) => {
-        console.error("Audio playback error", err);
+        console.error("Audio playback error:", {
+          error: err,
+          src: activeAudio?.src,
+          readyState: activeAudio?.readyState,
+          networkState: activeAudio?.networkState,
+          errorCode: activeAudio?.error?.code,
+          errorMessage: activeAudio?.error?.message
+        });
         isPlaying = false;
         activeAudio = null;
         state.status = 'listening';
         updateUI();
+        // Continue with next audio in queue
         processQueue();
       };
 
