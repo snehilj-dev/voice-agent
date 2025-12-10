@@ -638,8 +638,20 @@
             }
           }
 
-          // NOTE: Silence detection is now handled by Silero VAD (see processAudioForVAD)
-          // The old 2-second timer has been replaced with AI-powered detection (~200ms)
+          // Silence Detection: VAD (fast) or Timer (fallback)
+          if (finalTranscript || interimTranscript) {
+            if (!vadModel) {
+              // Fallback: Use 2-second timer if VAD didn't load
+              clearTimeout(silenceTimeout);
+              silenceTimeout = setTimeout(() => {
+                console.log("Fallback timer: Silence detected -> Stop & Send");
+                recognition.stop();
+                state.status = 'processing';
+                updateUI();
+              }, SILENCE_THRESHOLD);
+            }
+            // If VAD is loaded, it handles silence detection automatically
+          }
 
           if (finalTranscript) {
             console.log("Sending:", finalTranscript);
