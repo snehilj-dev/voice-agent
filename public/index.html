@@ -354,6 +354,7 @@
     let consecutiveSilenceFrames = 0;
     const SILENCE_FRAMES_THRESHOLD = 8; // ~256ms of silence (less sensitive)
     const SPEECH_THRESHOLD = 0.3; // Lower = easier to detect speech
+    let vadEnabled = false; // Only enable VAD after speech is detected
 
     // --- UI Update Helper ---
     function updateUI() {
@@ -666,6 +667,12 @@
             }
           }
 
+          // Enable VAD once we detect speech
+          if (interimTranscript && !vadEnabled) {
+            vadEnabled = true;
+            console.log("VAD: Enabled after speech detection");
+          }
+
           // Barge-in
           if (finalTranscript || interimTranscript) {
             if (isPlaying || audioQueue.length > 0) {
@@ -771,21 +778,18 @@
           vadState.h = output.stateN;
         }
 
-        // Detect silence
+        // Detect silence (only if VAD is enabled after speech detection)
         if (speechProb < SPEECH_THRESHOLD) {
           consecutiveSilenceFrames++;
-          if (consecutiveSilenceFrames >= SILENCE_FRAMES_THRESHOLD) {
+          if (consecutiveSilenceFrames >= SILENCE_FRAMES_THRESHOLD && vadEnabled) {
             // User stopped speaking!
-            console.log("VAD: Silence detected");
-            // TEMPORARILY DISABLED: VAD was stopping recognition too aggressively
-            // Relying on fallback timer instead until we can properly tune sensitivity
-            /*
+            console.log("VAD: Silence detected, stopping recognition");
             if (recognition && state.isCallActive) {
               recognition.stop();
               state.status = 'processing';
               updateUI();
+              vadEnabled = false; // Reset for next utterance
             }
-            */
             consecutiveSilenceFrames = 0; // Reset
           }
         } else {
