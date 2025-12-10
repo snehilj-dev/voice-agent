@@ -344,6 +344,7 @@
     // Echo Cancellation
     let aecStream = null;
     let currentSpokenText = ""; // Text currently being spoken by bot
+    let echoTimeout = null; // Timeout to clear echo text after audio finishes
 
     // Silero VAD
     let vadModel = null;
@@ -642,7 +643,8 @@
           let fullTranscript = (finalTranscript + interimTranscript).trim().toLowerCase();
 
           // --- ECHO DETECTION (FUZZY) ---
-          if (isPlaying && currentSpokenText) {
+          // Check if we recently spoke (even if audio finished)
+          if (currentSpokenText) {
             const textToMatch = currentSpokenText.toLowerCase();
             const cleanInput = fullTranscript.toLowerCase();
 
