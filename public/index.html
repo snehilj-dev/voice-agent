@@ -586,7 +586,17 @@
 
           // Handle different error types
           if (event.error === 'no-speech') {
-            // User didn't speak, just continue listening
+            // User didn't speak - force restart to keep listening
+            console.log("No speech detected, restarting recognition...");
+            if (state.isCallActive) {
+              setTimeout(() => {
+                try {
+                  recognition.start();
+                } catch (e) {
+                  console.error("Failed to restart after no-speech:", e);
+                }
+              }, 100);
+            }
             return;
           }
 
