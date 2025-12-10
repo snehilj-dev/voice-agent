@@ -700,7 +700,7 @@
       try {
         console.log("Loading Silero VAD model...");
         vadModel = await ort.InferenceSession.create(
-          "https://cdn.jsdelivr.net/gh/snakers4/silero-vad@master/files/silero_vad.onnx"
+          "https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx/model.onnx"
         );
 
         // Initialize VAD state (required by model)
