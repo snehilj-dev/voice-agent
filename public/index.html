@@ -488,16 +488,6 @@
       const url = audioQueue.shift();
       activeAudio = new Audio(url);
 
-      // PRODUCTION FIX: Stop recognition while bot speaks (100% echo prevention)
-      if (recognition && state.isCallActive) {
-        try {
-          recognition.stop();
-          console.log("Mic muted: Bot is speaking");
-        } catch (e) {
-          // Recognition might already be stopped
-        }
-      }
-
       activeAudio.onended = () => {
         isPlaying = false;
         activeAudio = null;
@@ -513,18 +503,6 @@
             console.log("Echo protection cleared");
           }, 3000);
           updateUI();
-
-          // PRODUCTION FIX: Restart recognition after bot finishes speaking
-          if (state.isCallActive) {
-            setTimeout(() => {
-              try {
-                recognition.start();
-                console.log("Mic unmuted: Ready to listen");
-              } catch (e) {
-                console.error("Failed to restart recognition:", e);
-              }
-            }, 500); // 500ms delay to ensure audio is fully cleared
-          }
         }
       };
 
@@ -679,28 +657,27 @@
 
           let fullTranscript = (finalTranscript + interimTranscript).trim().toLowerCase();
 
-          // --- ECHO DETECTION (FUZZY) ---
+          // --- ECHO DETECTION (AGGRESSIVE) ---
           // Check if we recently spoke (even if audio finished)
           if (currentSpokenText) {
-            const textToMatch = currentSpokenText.toLowerCase();
-            const cleanInput = fullTranscript.toLowerCase();
+            const textToMatch = currentSpokenText.toLowerCase().trim();
+            const cleanInput = fullTranscript.toLowerCase().trim();
 
             // 1. Direct Inclusion (Fast)
             if (textToMatch.includes(cleanInput) || cleanInput.includes(textToMatch)) {
-              console.log(">> Echo detected (Exact/Substr):", cleanInput);
+              console.log(">> Echo BLOCKED (Exact match):", cleanInput);
               return;
             }
 
-            // 2. Fuzzy Match (Levenshtein) - For partial/noisy echoes
-            // Only run if input is decent length (> 5 chars) to avoid false positives on short words like "hi"
-            if (cleanInput.length > 5) {
+            // 2. Fuzzy Match (Levenshtein) - AGGRESSIVE (40% threshold instead of 60%)
+            if (cleanInput.length > 3) { // Lower from 5 to 3
               const distance = levenshtein(cleanInput, textToMatch);
               const maxLen = Math.max(cleanInput.length, textToMatch.length);
               const similarity = 1 - (distance / maxLen);
 
-              // If 60% similar, assume it's an echo
-              if (similarity > 0.6) {
-                console.log(`>> Echo detected (Fuzzy ${Math.round(similarity * 100)}%):`, cleanInput);
+              // If 40% similar, assume it's an echo (was 60%)
+              if (similarity > 0.4) {
+                console.log(`>> Echo BLOCKED (Fuzzy ${Math.round(similarity * 100)}%):`, cleanInput);
                 return;
               }
             }
