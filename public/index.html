@@ -703,10 +703,9 @@
           "https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx/model.onnx"
         );
 
-        // Initialize VAD state (required by model)
-        const h = new ort.Tensor("float32", new Float32Array(2 * 64).fill(0), [2, 1, 64]);
-        const c = new ort.Tensor("float32", new Float32Array(2 * 64).fill(0), [2, 1, 64]);
-        vadState = { h, c };
+        // Initialize VAD state (required by model) - 2 layers x 1 batch x 64 hidden = 128 total
+        const h = new ort.Tensor("float32", new Float32Array(2 * 1 * 64).fill(0), [2, 1, 64]);
+        vadState = { h }; // Only need h for the HF model
 
         console.log("Silero VAD loaded successfully");
       } catch (err) {
