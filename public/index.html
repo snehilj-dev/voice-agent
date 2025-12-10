@@ -575,9 +575,43 @@
         };
 
         recognition.onerror = (event) => {
-          if (event.error === 'no-speech') return;
           console.warn("Recognition error:", event.error);
-          // Don't kill calls on temporary errors
+
+          // Handle different error types
+          if (event.error === 'no-speech') {
+            // User didn't speak, just continue listening
+            return;
+          }
+
+          if (event.error === 'network') {
+            // Network error - restart recognition after a brief delay
+            console.log("Network error detected, restarting recognition...");
+            if (state.isCallActive) {
+              setTimeout(() => {
+                try {
+                  recognition.stop(); // Stop first to clean up
+                  setTimeout(() => {
+                    if (state.isCallActive) {
+                      recognition.start();
+                    }
+                  }, 100);
+                } catch (e) {
+                  console.error("Failed to restart recognition:", e);
+                }
+              }, 500);
+            }
+            return;
+          }
+
+          // For other errors (audio-capture, not-allowed, etc.), log but don't crash
+          if (event.error === 'aborted') return; // Normal stop
+
+          // Critical errors - show to user
+          if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+            state.error = "Microphone permission denied";
+            state.isCallActive = false;
+            updateUI();
+          }
         };
 
         recognition.onend = () => {
