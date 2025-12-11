@@ -648,17 +648,8 @@
         recognition.onerror = (event) => {
           // SILENCE EXPECTED ERRORS: 'no-speech' is normal when user is thinking
           if (event.error === 'no-speech') {
-            // console.log("No speech detected, restarting..."); 
-            // ^ Optional: Comment out even this if you want total silence
-            if (state.isCallActive) {
-              setTimeout(() => {
-                try {
-                  recognition.start();
-                } catch (e) {
-                  // Ignore start errors (e.g. if already started)
-                }
-              }, 100);
-            }
+            // Do NOT restart here. 'onend' will fire next and handle the restart centrally.
+            // This prevents "double-start" race conditions.
             return;
           }
 
