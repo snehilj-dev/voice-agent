@@ -519,12 +519,12 @@
           processQueue();
         } else {
           state.status = 'listening';
-          // Clear echo text after 3 seconds (protects against tail-end echoes)
+          // Clear echo text after 6 seconds (protects against tail-end echoes)
           clearTimeout(echoTimeout);
           echoTimeout = setTimeout(() => {
             currentSpokenText = "";
             console.log("Echo protection cleared");
-          }, 3000);
+          }, 6000);
           updateUI();
         }
         audioRetryCount = 0; // Reset retry counter on success
@@ -610,7 +610,7 @@
       echoTimeout = setTimeout(() => {
         currentSpokenText = "";
         console.log("Echo protection cleared (after cancel)");
-      }, 3000);
+      }, 6000);
 
       lastAudioEndTime = Date.now(); // Also mark end time on cancel to prevent immediate echo leakage
       state.status = 'listening';
@@ -748,6 +748,16 @@
             const shouldRelaxCheck = !isPlaying && !isTailPeriod && inputWordCount < 4;
 
             if (!shouldRelaxCheck) {
+              // SUSTAIN PROTECTION: If we are actively blocking echoes, keeps the shield up!
+              // This prevents the protection from expiring mid-echo for long latency echoes.
+              if (echoTimeout) {
+                clearTimeout(echoTimeout);
+                echoTimeout = setTimeout(() => {
+                  currentSpokenText = "";
+                  console.log("Echo protection cleared (sustained)");
+                }, 6000);
+              }
+
               // Checking for "Included" Echoes
               if (cleanInput.includes(textToMatch)) {
                 // MIXED INPUT DETECTION:

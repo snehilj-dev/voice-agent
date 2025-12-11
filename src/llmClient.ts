@@ -310,9 +310,9 @@ export async function* streamCounselorReply(
 
   const stream = await client.chat.completions.create(
     {
-      model: "gpt-4.1-mini",
+      model: "gpt-4o-mini",
       messages: messagesToSend,
-      temperature: 0.5,
+      temperature: 0.2, // Lower temp for more deterministic behavior on noise
       max_tokens: 220,
       stream: true,
     },
