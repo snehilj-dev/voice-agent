@@ -784,6 +784,28 @@
                 console.log(`>> Echo BLOCKED (Fuzzy ${Math.round(similarity * 100)}% > ${threshold * 100}%):`, cleanInput);
                 return;
               }
+
+              // 3. WORD OVERLAP CHECK (Bag-of-Words) - Phase 9
+              // Catches "partial" echoes that fail strict substring (e.g. "please tell me your 10 digit" vs "10 digit number")
+              // Only apply if input has enough words (> 3) to be statistically significant
+              if (cleanInput.split(' ').length > 3) {
+                // Remove punctuation for cleaner word matching
+                const normalize = (s) => s.replace(/[^\w\s]/g, '').toLowerCase();
+                const inputWords = normalize(cleanInput).split(/\s+/).filter(w => w.length > 0);
+                const referenceWords = new Set(normalize(textToMatch).split(/\s+/).filter(w => w.length > 0));
+
+                let matchCount = 0;
+                for (const word of inputWords) {
+                  if (referenceWords.has(word)) matchCount++;
+                }
+
+                const overlapRatio = matchCount / inputWords.length;
+                // If > 70% of user's words are in the bot's text, it's likely an echo
+                if (overlapRatio > 0.7) {
+                  console.log(`>> Echo BLOCKED (Word Overlap ${Math.round(overlapRatio * 100)}%):`, cleanInput);
+                  return;
+                }
+              }
             }
           }
 
