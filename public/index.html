@@ -579,12 +579,17 @@
 
     function cancelAudio() {
       if (activeAudio) {
+        // PREVENT RETRY LOOP: Remove handlers before stopping
+        activeAudio.onerror = null;
+        activeAudio.onended = null;
+
         activeAudio.pause();
         activeAudio.currentTime = 0; // Reset to beginning
         activeAudio.src = ''; // Clear source to fully stop
         activeAudio = null;
       }
       audioQueue = [];
+      currentAudioUrl = null; // Clear current URL to prevent retry
       isPlaying = false;
       // DON'T clear currentSpokenText here - let the timeout handle it
       // This preserves echo protection during barge-in
