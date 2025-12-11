@@ -338,6 +338,7 @@
     let audioQueue = [];
     let isPlaying = false;
     let activeAudio = null;
+    let currentAudioUrl = null; // Track current URL for retries
     let silenceTimeout = null;
     const SILENCE_THRESHOLD = 2000; // 2 seconds
     let audioRetryCount = 0; // Track retry attempts
@@ -496,6 +497,7 @@
       updateUI();
 
       const url = audioQueue.shift();
+      currentAudioUrl = url; // Store for correct retry
       activeAudio = new Audio(url);
 
       activeAudio.onended = () => {
@@ -517,23 +519,37 @@
         audioRetryCount = 0; // Reset retry counter on success
       };
 
-      activeAudio.onerror = (err) => {
+      activeAudio.onerror = (event) => {
+        const err = event.error || event;
+        // Capture properties safely from the event target if possible, or fall back
+        const targetAudio = event.target;
+
         console.error("Audio playback error:", {
           error: err,
-          src: activeAudio?.src,
-          readyState: activeAudio?.readyState,
-          networkState: activeAudio?.networkState,
-          errorCode: activeAudio?.error?.code,
-          errorMessage: activeAudio?.error?.message,
+          // Use target if available, or fallbacks
+          src: targetAudio?.src || currentAudioUrl || 'unknown',
+          readyState: targetAudio?.readyState,
+          networkState: targetAudio?.networkState,
+          errorCode: targetAudio?.error?.code,
+          errorMessage: targetAudio?.error?.message,
           retryCount: audioRetryCount
         });
 
         // Retry logic: try playing again before giving up
-        if (audioRetryCount < MAX_AUDIO_RETRIES) {
+        if (audioRetryCount < MAX_AUDIO_RETRIES && currentAudioUrl) {
           audioRetryCount++;
           console.log(`Retrying audio playback (attempt ${audioRetryCount}/${MAX_AUDIO_RETRIES})...`);
+
+          // Cleanup current failed audio
+          if (activeAudio) {
+            activeAudio.pause();
+            activeAudio = null;
+          }
           isPlaying = false;
-          activeAudio = null;
+
+          // Re-queue the SAME URL at the front of the queue
+          audioQueue.unshift(currentAudioUrl);
+
           // Retry after brief delay
           setTimeout(() => {
             processQueue();
@@ -544,6 +560,8 @@
           audioRetryCount = 0;
           isPlaying = false;
           activeAudio = null;
+          currentAudioUrl = null; // Clear current URL
+
           state.status = 'listening';
           updateUI();
           // Continue with next audio in queue
