@@ -594,8 +594,16 @@
       audioQueue = [];
       currentAudioUrl = null; // Clear current URL to prevent retry
       isPlaying = false;
-      // DON'T clear currentSpokenText here - let the timeout handle it
-      // This preserves echo protection during barge-in
+
+      // ENSURE ECHO PROTECTION CLEARS EVENTUALLY
+      // Since onended isn't called, we must manually set the cleanup timer here.
+      // Otherwise, currentSpokenText remains stuck forever until next audio plays.
+      clearTimeout(echoTimeout);
+      echoTimeout = setTimeout(() => {
+        currentSpokenText = "";
+        console.log("Echo protection cleared (after cancel)");
+      }, 3000);
+
       state.status = 'listening';
       updateUI();
     }
@@ -727,36 +735,36 @@
             const shouldRelaxCheck = !isPlaying && inputWordCount < 4;
 
             if (!shouldRelaxCheck) {
-               // Checking for "Included" Echoes
-               if (cleanInput.includes(textToMatch)) {
-                 // MIXED INPUT DETECTION:
-                 // If the transcript contains the echo PLUS other text, it's likely user speaking over the bot.
-                 // We should STRIP the echo and process the rest.
-                 const strippedInput = cleanInput.replace(textToMatch, "").trim();
-                 
-                 if (strippedInput.length > 2) {
-                   console.log(`>> Mixed Input Detected (Echo + User). Stripping echo...`);
-                   console.log(`   Original: "${cleanInput}"`);
-                   console.log(`   Stripped: "${strippedInput}"`);
-                   
-                   // CRITICAL: Update the transcript variables so downstream logic uses only the user's part
-                   // We can't easily split final vs interim perfectly, so we'll just update the derived fullTranscript 
-                   // and assume finalTranscript takes the hit for sending.
-                   // A simple heuristic: Replace the echo in the finalTranscript if present.
-                   finalTranscript = finalTranscript.toLowerCase().replace(textToMatch, "").trim();
-                   interimTranscript = interimTranscript.toLowerCase().replace(textToMatch, "").trim();
-                   
-                   // Continue processing with the stripped input
-                 } else {
-                   // It's just the echo (or negligible noise) effectively
-                   console.log(`>> Echo BLOCKED (Exact match, active=${isPlaying}):`, cleanInput);
-                   return;
-                 }
-               } else if (textToMatch.includes(cleanInput)) {
-                  // The input is fully inside the bot's speech (pure echo)
-                  console.log(`>> Echo BLOCKED (Substring, active=${isPlaying}):`, cleanInput);
+              // Checking for "Included" Echoes
+              if (cleanInput.includes(textToMatch)) {
+                // MIXED INPUT DETECTION:
+                // If the transcript contains the echo PLUS other text, it's likely user speaking over the bot.
+                // We should STRIP the echo and process the rest.
+                const strippedInput = cleanInput.replace(textToMatch, "").trim();
+
+                if (strippedInput.length > 2) {
+                  console.log(`>> Mixed Input Detected (Echo + User). Stripping echo...`);
+                  console.log(`   Original: "${cleanInput}"`);
+                  console.log(`   Stripped: "${strippedInput}"`);
+
+                  // CRITICAL: Update the transcript variables so downstream logic uses only the user's part
+                  // We can't easily split final vs interim perfectly, so we'll just update the derived fullTranscript 
+                  // and assume finalTranscript takes the hit for sending.
+                  // A simple heuristic: Replace the echo in the finalTranscript if present.
+                  finalTranscript = finalTranscript.toLowerCase().replace(textToMatch, "").trim();
+                  interimTranscript = interimTranscript.toLowerCase().replace(textToMatch, "").trim();
+
+                  // Continue processing with the stripped input
+                } else {
+                  // It's just the echo (or negligible noise) effectively
+                  console.log(`>> Echo BLOCKED (Exact match, active=${isPlaying}):`, cleanInput);
                   return;
-               }
+                }
+              } else if (textToMatch.includes(cleanInput)) {
+                // The input is fully inside the bot's speech (pure echo)
+                console.log(`>> Echo BLOCKED (Substring, active=${isPlaying}):`, cleanInput);
+                return;
+              }
             }
 
             // 2. Fuzzy Match (Levenshtein) - DYNAMIC THRESHOLD
