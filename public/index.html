@@ -646,23 +646,24 @@
         };
 
         recognition.onerror = (event) => {
-          console.warn("Recognition error:", event.error);
-
-          // Handle different error types
+          // SILENCE EXPECTED ERRORS: 'no-speech' is normal when user is thinking
           if (event.error === 'no-speech') {
-            // User didn't speak - force restart to keep listening
-            console.log("No speech detected, restarting recognition...");
+            // console.log("No speech detected, restarting..."); 
+            // ^ Optional: Comment out even this if you want total silence
             if (state.isCallActive) {
               setTimeout(() => {
                 try {
                   recognition.start();
                 } catch (e) {
-                  console.error("Failed to restart after no-speech:", e);
+                  // Ignore start errors (e.g. if already started)
                 }
               }, 100);
             }
             return;
           }
+
+          console.warn("Recognition error:", event.error); // Warn for real errors only
+
 
           if (event.error === 'network') {
             // Network error - restart recognition after a brief delay
