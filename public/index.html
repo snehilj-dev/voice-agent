@@ -719,15 +719,16 @@
             const textToMatch = currentSpokenText.toLowerCase().trim();
             const cleanInput = fullTranscript.toLowerCase().trim();
 
-            // 1. Direct Inclusion (Smart)
-            // ONLY block substrings if the input is "Long Enough" to be a real sentence, 
-            // OR if it's a very significant chunk of the bot's speech.
-            // If input is short (< 4 words), user is likely answering (e.g. "Front Office").
+            // 1. Direct Inclusion (State-Aware)
             const inputWordCount = cleanInput.split(' ').length;
 
-            if (inputWordCount >= 4) {
+            // If bot is CURRENTLY speaking, be AGGRESSIVE (Block all execution echoes)
+            // If bot finished (isPlaying=false), be SMART (Allow short answers)
+            const shouldRelaxCheck = !isPlaying && inputWordCount < 4;
+
+            if (!shouldRelaxCheck) {
               if (textToMatch.includes(cleanInput) || cleanInput.includes(textToMatch)) {
-                console.log(">> Echo BLOCKED (Exact match, long input):", cleanInput);
+                console.log(`>> Echo BLOCKED (Exact match, active=${isPlaying}):`, cleanInput);
                 return;
               }
             }
@@ -738,10 +739,12 @@
               const maxLen = Math.max(cleanInput.length, textToMatch.length);
               const similarity = 1 - (distance / maxLen);
 
-              // DYNAMIC THRESHOLD:
-              // Short inputs (< 10 chars) need HIGH similarity (80%) to be blocked (avoids false positives)
-              // Long inputs (>= 10 chars) need STANDARD similarity (60%) to be blocked (catches noisy echoes)
-              const threshold = cleanInput.length < 10 ? 0.8 : 0.6;
+              // If playing, use stricter threshold (0.6) even for short inputs to prevent self-interruption
+              // If not playing, use relaxed threshold (0.8) for short inputs (allow answers)
+              let threshold = 0.6; // Standard
+              if (!isPlaying && cleanInput.length < 10) {
+                threshold = 0.8; // Relaxed for short answers
+              }
 
               if (similarity > threshold) {
                 console.log(`>> Echo BLOCKED (Fuzzy ${Math.round(similarity * 100)}% > ${threshold * 100}%):`, cleanInput);
