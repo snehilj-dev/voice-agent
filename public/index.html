@@ -340,6 +340,8 @@
     let activeAudio = null;
     let silenceTimeout = null;
     const SILENCE_THRESHOLD = 2000; // 2 seconds
+    let audioRetryCount = 0; // Track retry attempts
+    const MAX_AUDIO_RETRIES = 2; // Retry failed audio twice before skipping
 
     // Echo Cancellation
     let aecStream = null;
@@ -512,6 +514,7 @@
           }, 3000);
           updateUI();
         }
+        audioRetryCount = 0; // Reset retry counter on success
       };
 
       activeAudio.onerror = (err) => {
@@ -521,14 +524,31 @@
           readyState: activeAudio?.readyState,
           networkState: activeAudio?.networkState,
           errorCode: activeAudio?.error?.code,
-          errorMessage: activeAudio?.error?.message
+          errorMessage: activeAudio?.error?.message,
+          retryCount: audioRetryCount
         });
-        isPlaying = false;
-        activeAudio = null;
-        state.status = 'listening';
-        updateUI();
-        // Continue with next audio in queue
-        processQueue();
+
+        // Retry logic: try playing again before giving up
+        if (audioRetryCount < MAX_AUDIO_RETRIES) {
+          audioRetryCount++;
+          console.log(`Retrying audio playback (attempt ${audioRetryCount}/${MAX_AUDIO_RETRIES})...`);
+          isPlaying = false;
+          activeAudio = null;
+          // Retry after brief delay
+          setTimeout(() => {
+            processQueue();
+          }, 300);
+        } else {
+          // Max retries reached, skip to next audio
+          console.warn("Max retries reached, skipping to next audio");
+          audioRetryCount = 0;
+          isPlaying = false;
+          activeAudio = null;
+          state.status = 'listening';
+          updateUI();
+          // Continue with next audio in queue
+          processQueue();
+        }
       };
 
       activeAudio.play().catch(e => {
