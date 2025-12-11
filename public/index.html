@@ -348,8 +348,43 @@
     let aecStream = null;
     let currentSpokenText = ""; // Text currently being spoken by bot
     let echoTimeout = null; // Timeout to clear echo text after audio finishes
+    let lastAudioEndTime = 0; // Timestamp when last audio finished playing
 
-    // Silero VAD
+    // ... (lines 352-506 omitted for brevity)
+
+    activeAudio.onended = () => {
+      isPlaying = false;
+      lastAudioEndTime = Date.now(); // Mark end time for tail protection
+      activeAudio = null;
+      // If more audio, keep speaking, else back to listening
+      if (audioQueue.length > 0) {
+        processQueue();
+      } else {
+        state.status = 'listening';
+        // Clear echo text after 3 seconds (protects against tail-end echoes)
+        clearTimeout(echoTimeout);
+        echoTimeout = setTimeout(() => {
+          currentSpokenText = "";
+          console.log("Echo protection cleared");
+        }, 3000);
+        updateUI();
+      }
+      audioRetryCount = 0; // Reset retry counter on success
+    };
+
+    // ... (lines 525-598 omitted)
+
+    // ENSURE ECHO PROTECTION CLEARS EVENTUALLY
+    clearTimeout(echoTimeout);
+    echoTimeout = setTimeout(() => {
+      currentSpokenText = "";
+      console.log("Echo protection cleared (after cancel)");
+    }, 3000);
+
+    lastAudioEndTime = Date.now(); // Also mark end time on cancel to prevent immediate echo leakage
+    state.status = 'listening';
+    updateUI();
+    }
     let vadModel = null;
     let vadContext = null;
     let vadProcessor = null;
@@ -730,9 +765,13 @@
             // 1. Direct Inclusion (State-Aware)
             const inputWordCount = cleanInput.split(' ').length;
 
-            // If bot is CURRENTLY speaking, be AGGRESSIVE (Block all execution echoes)
-            // If bot finished (isPlaying=false), be SMART (Allow short answers)
-            const shouldRelaxCheck = !isPlaying && inputWordCount < 4;
+            // Tail Protection: Extend strict checks for 800ms after audio ends
+            // This catches acoustic echoes that arrive just as the bot finishes.
+            const isTailPeriod = (Date.now() - lastAudioEndTime) < 800;
+
+            // If bot is CURRENTLY speaking OR in the echo tail period, be AGGRESSIVE
+            // If completely finished (isPlaying=false AND !isTailPeriod), be SMART
+            const shouldRelaxCheck = !isPlaying && !isTailPeriod && inputWordCount < 4;
 
             if (!shouldRelaxCheck) {
               // Checking for "Included" Echoes
