@@ -320,7 +320,8 @@
       isConnected: false,
       isCallActive: false, // User clicked Start Call
       status: 'idle', // idle, listening, processing, speaking
-      error: null
+      error: null,
+      currentVadProb: 0 // Real-time VAD probability (0.0 - 1.0)
     };
 
     // --- DOM Elements ---
@@ -427,7 +428,15 @@
     function connectWebSocket() {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const host = window.location.host;
-      const wsUrl = `${protocol}//${host}`;
+
+      // Generate or retrieve persistent Session ID
+      let sessionId = localStorage.getItem('voice_agent_session_id');
+      if (!sessionId) {
+        sessionId = 'sess_' + Math.random().toString(36).substring(2, 15);
+        localStorage.setItem('voice_agent_session_id', sessionId);
+      }
+
+      const wsUrl = `${protocol}//${host}?sessionId=${sessionId}`;
 
       socket = new WebSocket(wsUrl);
       socket.binaryType = "arraybuffer";
@@ -721,6 +730,12 @@
           let interimTranscript = "";
 
           for (let i = event.resultIndex; i < event.results.length; ++i) {
+            // --- 1. STRICT GARBAGE FILTERING (Confidence) ---
+            if (event.results[i][0].confidence < 0.6) {
+              console.log(`>> Low confidence result (${event.results[i][0].confidence.toFixed(2)}), ignoring...`);
+              continue;
+            }
+
             if (event.results[i].isFinal) {
               finalTranscript += event.results[i][0].transcript;
             } else {
@@ -729,6 +744,20 @@
           }
 
           let fullTranscript = (finalTranscript + interimTranscript).trim().toLowerCase();
+
+          // --- 2. SMART BARGE-IN GATE (REMOVED) ---
+          // derived from user request: VAD gate caused delays. 
+          // We rely on "Strict Garbage Filtering" (above) and "Echo Detection" (below) for safety.
+
+          // --- 3. FILTER MICRO-HALLUCINATIONS ---
+          // Determine if input is just 1-2 chars of noise (unless it's "ok", "no", "hi")
+          if (fullTranscript.length > 0 && fullTranscript.length <= 2) {
+            const allowedShortWords = ['ok', 'no', 'hi', 'ya', 'yo'];
+            if (!allowedShortWords.includes(fullTranscript)) {
+              console.log(`>> Micro-hallucination blocked: "${fullTranscript}"`);
+              return;
+            }
+          }
 
           // --- ECHO DETECTION (AGGRESSIVE) ---
           // Check if we recently spoke (even if audio finished)
@@ -909,15 +938,26 @@
     async function initVAD() {
       try {
         console.log("Loading Silero VAD model...");
+        // Use a more reliable CDN for the model
         vadModel = await ort.InferenceSession.create(
-          "https://huggingface.co/onnx-community/silero-vad/resolve/main/onnx/model.onnx"
+          "https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.7/dist/silero_vad.onnx"
         );
 
-        // Initialize VAD state for Silero VAD v5 - shape: (2, 1, 128)
-        const h = new ort.Tensor("float32", new Float32Array(2 * 1 * 128).fill(0), [2, 1, 128]);
-        vadState = { h };
+        console.log("VAD Model Input Names:", vadModel.inputNames);
 
-        console.log("Silero VAD loaded successfully");
+        // Initialize State based on model version
+        if (vadModel.inputNames.includes('state')) {
+          // V5 model
+          const h = new ort.Tensor("float32", new Float32Array(2 * 1 * 128).fill(0), [2, 1, 128]);
+          vadState = { version: 5, h };
+          console.log("Silero VAD V5 loaded successfully");
+        } else {
+          // V4 model (uses h and c separately, shape [2, 1, 64])
+          const h = new ort.Tensor("float32", new Float32Array(2 * 1 * 64).fill(0), [2, 1, 64]);
+          const c = new ort.Tensor("float32", new Float32Array(2 * 1 * 64).fill(0), [2, 1, 64]);
+          vadState = { version: 4, h, c };
+          console.log("Silero VAD V4 loaded successfully");
+        }
       } catch (err) {
         console.warn("Could not load VAD model, falling back to timer:", err);
       }
@@ -927,30 +967,35 @@
       if (!vadModel || !state.isCallActive) return;
 
       try {
-        // Prepare input tensor (512 samples at 16kHz)
         const audioTensor = new ort.Tensor("float32", audioData, [1, audioData.length]);
         const sr = new ort.Tensor("int64", BigInt64Array.from([BigInt(vadSampleRate)]));
 
-        // Hugging Face model expects 'state' instead of separate h/c
-        const inputs = {
-          input: audioTensor,
-          state: vadState.h, // Use h as state (model will handle internally)
-          sr: sr
-        };
+
+        let inputs = {};
+        if (vadState.version === 5) {
+          inputs = { input: audioTensor, state: vadState.h, sr: sr };
+        } else {
+          inputs = { input: audioTensor, h: vadState.h, c: vadState.c, sr: sr };
+        }
 
         const output = await vadModel.run(inputs);
-        const speechProb = output.output.data[0]; // 0.0 to 1.0
+        const speechProb = output.output.data[0];
 
-        // Update state for next iteration (if model returns stateN)
-        if (output.stateN) {
-          vadState.h = output.stateN;
+
+        state.currentVadProb = speechProb;
+
+        if (vadState.version === 5) {
+          if (output.stateN) vadState.h = output.stateN;
+        } else {
+          if (output.hn) vadState.h = output.hn;
+          if (output.cn) vadState.c = output.cn;
         }
 
         // Detect silence (only if VAD is enabled after speech detection)
         if (speechProb < SPEECH_THRESHOLD) {
           consecutiveSilenceFrames++;
           if (consecutiveSilenceFrames >= SILENCE_FRAMES_THRESHOLD && vadEnabled) {
-            // User stopped speaking!
+
             console.log("VAD: Silence detected, stopping recognition");
             if (recognition && state.isCallActive) {
               recognition.stop();

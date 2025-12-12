@@ -199,10 +199,26 @@ server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
 
-wss.on("connection", async (ws: WebSocket) => {
+// Store sessions in memory
+const sessions = new Map<string, CounselorContext>();
+
+wss.on("connection", async (ws: WebSocket, req) => {
   console.log("New WebSocket connection");
 
-  let counselorCtx: CounselorContext = createInitialCounselorContext();
+  // Parse sessionId from URL
+  const urlParams = new URLSearchParams(req.url?.split('?')[1]);
+  const sessionId = urlParams.get('sessionId');
+
+  let counselorCtx: CounselorContext;
+
+  if (sessionId && sessions.has(sessionId)) {
+    console.log(`Resuming session for ${sessionId}`);
+    counselorCtx = sessions.get(sessionId)!;
+  } else {
+    console.log(`Creating new session for ${sessionId || 'anonymous'}`);
+    counselorCtx = createInitialCounselorContext();
+    if (sessionId) sessions.set(sessionId, counselorCtx);
+  }
 
   // Let's declare it in the connection scope
   let currentController: AbortController | null = null;
