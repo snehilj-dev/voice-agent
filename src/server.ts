@@ -183,9 +183,25 @@ const server = createServer((req, res) => {
       res.end('Error loading frontend');
     }
   } else if (req.url === '/favicon.svg') {
-    // Optional: Handle favicon if it exists, or 404
-    res.writeHead(404);
-    res.end();
+    // Serve favicon
+    try {
+      const favicon = readFileSync(join(process.cwd(), 'public', 'favicon.svg'), 'utf-8');
+      res.writeHead(200, { 'Content-Type': 'image/svg+xml' });
+      res.end(favicon);
+    } catch (err) {
+      res.writeHead(404);
+      res.end();
+    }
+  } else if (req.url?.endsWith('.js')) {
+    // Serve JavaScript files from public directory (e.g., vad-processor.js)
+    try {
+      const jsFile = readFileSync(join(process.cwd(), 'public', req.url), 'utf-8');
+      res.writeHead(200, { 'Content-Type': 'application/javascript' });
+      res.end(jsFile);
+    } catch (err) {
+      res.writeHead(404);
+      res.end('JS file not found');
+    }
   } else {
     res.writeHead(404);
     res.end('Not found');

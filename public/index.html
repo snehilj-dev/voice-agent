@@ -1020,20 +1020,25 @@
         vadContext = new AudioContext({ sampleRate: vadSampleRate });
         const source = vadContext.createMediaStreamSource(aecStream);
 
-        // Create ScriptProcessor for audio chunks
-        vadProcessor = vadContext.createScriptProcessor(512, 1, 1);
+        // Load AudioWorklet module
+        await vadContext.audioWorklet.addModule('vad-processor.js');
 
-        vadProcessor.onaudioprocess = (e) => {
+        // Create AudioWorkletNode to replace deprecated ScriptProcessorNode
+        vadProcessor = new AudioWorkletNode(vadContext, 'vad-processor');
+
+        // Handle audio data messages from the worklet
+        vadProcessor.port.onmessage = (event) => {
           if (!state.isCallActive) return;
 
-          const inputData = e.inputBuffer.getChannelData(0);
-          processAudioForVAD(inputData);
+          if (event.data.type === 'audioData') {
+            processAudioForVAD(event.data.data);
+          }
         };
 
         source.connect(vadProcessor);
         vadProcessor.connect(vadContext.destination);
 
-        console.log("VAD audio processing started");
+        console.log("VAD audio processing started (AudioWorklet)");
       } catch (err) {
         console.error("Could not setup VAD audio processing:", err);
       }
