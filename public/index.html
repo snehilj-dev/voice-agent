@@ -739,6 +739,15 @@
         state.speakerProfile.weightedPitchHistory = [];
         state.speakerProfile.weightedTimbreHistory = [];
         state.speakerProfile.lastMismatchReason = null;
+        // FIXED: Reset recentMaxRMS to prevent stale peak volume from previous call
+        // Without this, volume-based filtering in new call uses previous speaker's peak volume
+        // causing incorrect input filtering before new speaker is properly calibrated
+        state.speakerProfile.recentMaxRMS = 0.0;
+        // FIXED: Clear knownSpeakers Map to prevent speakers from previous calls persisting
+        // Without this, multi-speaker matching could incorrectly trigger across separate calls
+        // causing false speaker identification
+        state.speakerProfile.knownSpeakers.clear();
+        state.speakerProfile.currentSpeakerId = null;
         console.log(">> Speaker profile reset for new call");
       }
       
@@ -835,6 +844,11 @@
           // This must run BEFORE Voice ID, because Voice ID might accidentally accept the agent's own voice
           // if the volume is loud enough.
 
+          // FIXED: Store original values before any modifications for fallback checks
+          // These are needed for checks at lines 974 and 1013 that occur after stripping
+          const originalFullTranscript = fullTranscript;
+          const originalFinalTranscript = finalTranscript;
+
           if (currentSpokenText) {
             // Helper to normalize text for comparison (remove punctuation, handle contractions)
             const normalizeText = (str) => {
@@ -856,7 +870,8 @@
             };
 
             const textToMatch = normalizeText(currentSpokenText);
-            const cleanInput = normalizeText(fullTranscript);
+            // FIXED: Use let instead of const so cleanInput can be updated after echo stripping
+            let cleanInput = normalizeText(fullTranscript);
             const inputWordCount = cleanInput.split(' ').length;
 
             // FIXED: Always clear existing timeout before setting new one (prevents race conditions)
@@ -881,9 +896,82 @@
                 // If the user truly spoke over the bot, it would be a sentence.
                 if (strippedInput.length > 4) {
                   console.log(`>> Mixed Input Detected. Stripping echo...`);
+                  // FIXED: Preserve original formatting while stripping echo
+                  // Issue: Previous approach normalized transcripts, losing capitalization, punctuation, and contractions
+                  // Solution: Find echo in original transcripts using smart matching, then remove it while preserving formatting
+                  
+                  // Helper function to find and remove echo from original text while preserving formatting
+                  const stripEchoPreservingFormat = (originalText, normalizedEcho) => {
+                    if (!originalText || !normalizedEcho) return originalText;
+                    
+                    // Normalize original for comparison
+                    const normalizedOriginal = normalizeText(originalText);
+                    
+                    // Find where echo appears in normalized text
+                    const echoIndex = normalizedOriginal.indexOf(normalizedEcho);
+                    if (echoIndex === -1) {
+                      // Echo not found - return original unchanged
+                      return originalText;
+                    }
+                    
+                    // Split original text into words
+                    const originalWordsOnly = originalText.split(/\s+/).filter(w => w.length > 0);
+                    
+                    // Build normalized version word-by-word to map positions correctly
+                    // This handles contractions that expand to multiple words
+                    const normalizedWords = [];
+                    const wordMapping = []; // Maps normalized word index to original word index
+                    
+                    for (let i = 0; i < originalWordsOnly.length; i++) {
+                      const normalizedWord = normalizeText(originalWordsOnly[i]);
+                      const normalizedWordParts = normalizedWord.split(/\s+/).filter(w => w.length > 0);
+                      
+                      for (let j = 0; j < normalizedWordParts.length; j++) {
+                        normalizedWords.push(normalizedWordParts[j]);
+                        wordMapping.push(i); // Map back to original word index
+                      }
+                    }
+                    
+                    // Find echo in normalized word sequence
+                    const echoWords = normalizedEcho.split(/\s+/).filter(w => w.length > 0);
+                    let matchStart = -1;
+                    
+                    for (let i = 0; i <= normalizedWords.length - echoWords.length; i++) {
+                      const slice = normalizedWords.slice(i, i + echoWords.length);
+                      if (slice.join(' ') === normalizedEcho) {
+                        matchStart = i;
+                        break;
+                      }
+                    }
+                    
+                    if (matchStart === -1) {
+                      return originalText; // No match found
+                    }
+                    
+                    // Find which original words to remove
+                    const firstEchoWordIndex = wordMapping[matchStart];
+                    const lastEchoWordIndex = wordMapping[matchStart + echoWords.length - 1];
+                    
+                    // Reconstruct text without echo words
+                    const beforeWords = originalWordsOnly.slice(0, firstEchoWordIndex);
+                    const afterWords = originalWordsOnly.slice(lastEchoWordIndex + 1);
+                    
+                    return (beforeWords.join(' ') + ' ' + afterWords.join(' ')).trim().replace(/\s{2,}/g, ' ');
+                  };
+                  
+                  // Strip echo from original transcripts while preserving formatting
+                  finalTranscript = stripEchoPreservingFormat(finalTranscript, textToMatch);
+                  interimTranscript = stripEchoPreservingFormat(interimTranscript, textToMatch);
+                  
+                  // Update fullTranscript with stripped version (normalized for downstream use)
                   fullTranscript = strippedInput;
-                  finalTranscript = finalTranscript.toLowerCase().replace(textToMatch, "").trim();
-                  interimTranscript = interimTranscript.toLowerCase().replace(textToMatch, "").trim();
+                  
+                  // FIXED: Recalculate cleanInput after stripping to reflect the stripped transcript
+                  // Previous cleanInput was calculated before stripping and contains the echo
+                  // Fuzzy match checks need to use the stripped version, not the stale pre-stripping value
+                  cleanInput = strippedInput; // strippedInput is already normalized
+                  
+                  console.log(`[ECHO STRIP] Removed: "${textToMatch}" | Final: "${finalTranscript}" | Interim: "${interimTranscript}"`);
                 } else {
                   console.log(`>> Echo BLOCKED (Exact match + Residue too short): "${cleanInput}"`);
                   return;
@@ -903,7 +991,9 @@
 
                   // We need to check if ANY result is final. 
                   // Logic: if 'finalTranscript' is empty, it means we are in interim state.
-                  if (!finalTranscript) {
+                  // FIXED: Use originalFinalTranscript before stripping, not modified finalTranscript
+                  // After stripping, finalTranscript might be empty even if original had content
+                  if (!originalFinalTranscript) {
                     console.log(`>> Echo Suspect (Interim): "${cleanInput}" -> Waiting...`);
                     return;
                   } else {
@@ -914,30 +1004,58 @@
             }
 
             // Fuzzy Match - Improved for Partial/Substring Echoes
-            if (fullTranscript.length > 3) {
-              const len = fullTranscript.length;
+            // FIXED: Use normalized cleanInput instead of non-normalized fullTranscript
+            // Both arguments to levenshtein() must use the same normalization format
+            if (cleanInput.length > 3) {
+              const len = cleanInput.length;
               
               // 1. Standard Full Match (Good for full echoes)
-              const distance = levenshtein(fullTranscript, textToMatch);
-              const maxLen = Math.max(fullTranscript.length, textToMatch.length);
+              // FIXED: Use cleanInput (normalized) instead of fullTranscript (non-normalized)
+              const distance = levenshtein(cleanInput, textToMatch);
+              const maxLen = Math.max(cleanInput.length, textToMatch.length);
               const similarity = 1 - (distance / maxLen);
 
               // 2. Prefix Match (Good if echo captures start of bot speech)
               // Compare input vs Start of Bot Text
-              const prefixBot = textToMatch.substring(0, len);
-              const prefixDist = levenshtein(fullTranscript, prefixBot);
-              const prefixSim = 1 - (prefixDist / Math.max(len, prefixBot.length));
+              // FIXED: Only extract prefix if bot text is long enough
+              let prefixSim = 0;
+              if (textToMatch.length >= len) {
+                const prefixBot = textToMatch.substring(0, len);
+                const prefixDist = levenshtein(cleanInput, prefixBot);
+                prefixSim = 1 - (prefixDist / Math.max(len, prefixBot.length));
+              }
 
               // 3. Suffix Match (Good if echo captures end of bot speech)
-              const suffixBot = textToMatch.substring(textToMatch.length - len);
-              const suffixDist = levenshtein(fullTranscript, suffixBot);
-              const suffixSim = 1 - (suffixDist / Math.max(len, suffixBot.length));
+              // FIXED: Only extract suffix when bot text is long enough
+              // When user input is longer than bot text, extracting suffix would return entire bot text
+              // Example: bot="yes" (3), user="yes, I would like to" (20) -> would extract all of "yes" incorrectly
+              let suffixSim = 0;
+              if (textToMatch.length >= len) {
+                const suffixBot = textToMatch.substring(textToMatch.length - len);
+                const suffixDist = levenshtein(cleanInput, suffixBot);
+                suffixSim = 1 - (suffixDist / Math.max(len, suffixBot.length));
+              }
 
               // If ANY similarity is high (> 75%), block it.
               if (similarity > 0.6 || prefixSim > 0.75 || suffixSim > 0.75) {
                  const bestSim = Math.max(similarity, prefixSim, suffixSim);
                  console.log(`>> Echo BLOCKED (Fuzzy ${Math.round(bestSim * 100)}%): "${cleanInput}"`);
                  return;
+              }
+            } else if (originalFullTranscript.length > 3) {
+              // Fallback: If cleanInput is too short but fullTranscript exists, normalize it properly
+              // FIXED: Use originalFullTranscript before stripping, not modified fullTranscript
+              // After stripping, fullTranscript might be too short even if original had enough content
+              // FIXED: Use normalizeText() instead of just .toLowerCase() to match textToMatch format
+              // (This should rarely happen, but provides a safety net)
+              const normalizedFallback = normalizeText(originalFullTranscript);
+              const distance = levenshtein(normalizedFallback, textToMatch);
+              const maxLen = Math.max(normalizedFallback.length, textToMatch.length);
+              const similarity = 1 - (distance / maxLen);
+              
+              if (similarity > 0.6) {
+                console.log(`>> Echo BLOCKED (Fuzzy fallback ${Math.round(similarity * 100)}%): "${normalizedFallback}"`);
+                return;
               }
             }
           }
@@ -1027,7 +1145,11 @@
 
             // Fast multi-layer filtering (<5ms target)
             // FIXED: Use currentUtteranceRMS instead of potentially stale recentMaxRMS
-            if (!forceAcceptVolume && !shouldAcceptInput(fullTranscript, currentUtteranceRMS, currentSpokenText)) {
+            // FIXED: Use originalFullTranscript for biometric check to match audio analysis
+            // Biometric analysis (processAudioForVAD) was done on original audio (before echo stripping),
+            // so we should check the original transcript, not the stripped version
+            const transcriptForBiometricCheck = originalFullTranscript || fullTranscript;
+            if (!forceAcceptVolume && !shouldAcceptInput(transcriptForBiometricCheck, currentUtteranceRMS, currentSpokenText)) {
               return; // Reject input
             }
           }
@@ -1127,6 +1249,14 @@
 
     async function processAudioForVAD(audioData) {
       if (!vadModel || !state.isCallActive) return;
+
+      // FIXED: Clear lastMismatchReason at start of each frame to prevent stale values
+      // The mismatch reason is only set inside the biometric check block when certain conditions are met
+      // If those conditions aren't met, it would retain the previous value, causing incorrect rejections
+      // Clearing it here ensures shouldAcceptInput only uses current-frame mismatch data
+      if (ENABLE_SPEAKER_FILTERING) {
+        state.speakerProfile.lastMismatchReason = null;
+      }
 
       try {
         if (!processAudioForVAD.analyser) {
@@ -1472,15 +1602,16 @@
                 ? state.speakerProfile.mfccHistory[mfccHistoryLen - 1]
                 : null;
               
-              // Only use MFCC if it's recent, otherwise match without it
-              if (currentMFCC || !state.speakerProfile.calibrationComplete) {
-                matchedSpeaker = matchSpeaker(currentPitch, currentCentroid, currentRMS, currentMFCC);
-                
-                if (matchedSpeaker && matchedSpeaker.similarity > 0.7) {
-                  // Strong match found - update current speaker
-                  state.speakerProfile.currentSpeakerId = matchedSpeaker.speakerId;
-                  console.log(`[Multi-Speaker] Matched: ${matchedSpeaker.speakerId} (${(matchedSpeaker.similarity * 100).toFixed(1)}% similarity)`);
-                }
+              // FIXED: matchSpeaker can work without MFCC (uses pitch, timbre, volume)
+              // Previous condition blocked matching when MFCC was null and calibration was complete
+              // Since MFCC is calculated every 5 frames, most calls won't have it available
+              // This caused multi-speaker identification to fail silently for most frames
+              matchedSpeaker = matchSpeaker(currentPitch, currentCentroid, currentRMS, currentMFCC);
+              
+              if (matchedSpeaker && matchedSpeaker.similarity > 0.7) {
+                // Strong match found - update current speaker
+                state.speakerProfile.currentSpeakerId = matchedSpeaker.speakerId;
+                console.log(`[Multi-Speaker] Matched: ${matchedSpeaker.speakerId} (${(matchedSpeaker.similarity * 100).toFixed(1)}% similarity)`);
               }
             }
             
@@ -1651,38 +1782,49 @@
 
         // Handle audio data messages from the worklet
         // FIXED: Queue processing to prevent out-of-order execution
+        // FIXED: Define flag in outer scope to persist across all message handlers
+        // If defined inside onmessage, it would be recreated for each message, causing the check to always be true
         let isProcessingVAD = false;
         const vadQueue = [];
         
-        vadProcessor.port.onmessage = (event) => {
+        vadProcessor.port.onmessage = async (event) => {
           if (!state.isCallActive) return;
           if (event.data.type === 'audioData') {
             vadQueue.push(event.data.data);
             
             // Process queue sequentially to prevent race conditions
+            // FIXED: Set flag BEFORE calling and use await to ensure sequential processing
             if (!isProcessingVAD) {
-              processVADQueue();
+              isProcessingVAD = true; // Set flag immediately to prevent race condition
+              // Start processing queue (will continue until empty)
+              processVADQueue().catch(err => {
+                console.error("VAD queue processing error:", err);
+                isProcessingVAD = false; // Reset flag on error
+              });
             }
           }
         };
         
+        // FIXED: Convert from recursion to iteration to prevent stack overflow
+        // If audio frames arrive faster than they can be processed, recursion would accumulate
+        // on the call stack and eventually overflow. Iteration prevents this.
         async function processVADQueue() {
-          if (vadQueue.length === 0) {
-            isProcessingVAD = false;
-            return;
+          while (vadQueue.length > 0) {
+            const audioData = vadQueue.shift();
+            
+            try {
+              await processAudioForVAD(audioData);
+            } catch (err) {
+              console.error("VAD processing error:", err);
+              // Continue processing queue even after errors
+              // Don't reset flag here - let it reset when queue is empty
+              // This prevents deadlock: if processAudioForVAD repeatedly fails,
+              // the queue will eventually empty and the flag will reset, allowing new items
+            }
           }
           
-          isProcessingVAD = true;
-          const audioData = vadQueue.shift();
-          
-          try {
-            await processAudioForVAD(audioData);
-          } catch (err) {
-            console.error("VAD processing error:", err);
-          }
-          
-          // Process next item in queue
-          processVADQueue();
+          // Reset flag when queue is empty (handles both normal completion and errors)
+          isProcessingVAD = false;
         }
 
         source.connect(vadProcessor);
@@ -1891,9 +2033,25 @@
         
         for (let bin = binStart; bin < binEnd && bin < fftSize / 2; bin++) {
           if (bin < binCenter) {
-            filter[bin] = (bin - binStart) / (binCenter - binStart);
+            // FIXED: Prevent division by zero when binCenter == binStart
+            // This can occur when FFT bin spacing is coarse relative to filter count,
+            // causing adjacent mel filter center frequencies to map to the same bin after flooring
+            const denominator = binCenter - binStart;
+            if (denominator === 0) {
+              // If center equals start, set filter value to 1.0 (peak at center)
+              filter[bin] = 1.0;
+            } else {
+              filter[bin] = (bin - binStart) / denominator;
+            }
           } else {
-            filter[bin] = (binEnd - bin) / (binEnd - binCenter);
+            // FIXED: Prevent division by zero when binEnd == binCenter
+            const denominator = binEnd - binCenter;
+            if (denominator === 0) {
+              // If end equals center, set filter value to 1.0 (peak at center)
+              filter[bin] = 1.0;
+            } else {
+              filter[bin] = (binEnd - bin) / denominator;
+            }
           }
         }
         

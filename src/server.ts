@@ -298,17 +298,47 @@ wss.on("connection", async (ws: WebSocket, req) => {
                   // If sentences are >80% similar, it's likely a repetition
                   if (normalizedCurrent.length < 10 || normalizedPrev.length < 10) return false; // Skip very short sentences
                   
-                  const wordsCurrent = normalizedCurrent.split(/\s+/);
-                  const wordsPrev = normalizedPrev.split(/\s+/);
-                  const commonWords = wordsCurrent.filter(w => wordsPrev.includes(w)).length;
-                  const similarity = commonWords / Math.max(wordsCurrent.length, wordsPrev.length);
+                  const wordsCurrent = new Set(normalizedCurrent.split(/\s+/).filter(w => w.length > 0));
+                  const wordsPrev = new Set(normalizedPrev.split(/\s+/).filter(w => w.length > 0));
                   
-                  return similarity > 0.8; // 80% word overlap = repetition
+                  // FIXED: Use Jaccard similarity (intersection over union) instead of commonWords/maxLength
+                  // Previous calculation: commonWords / max(length1, length2) was too strict
+                  // Example: "hello world" vs "hello world foo bar" = 2/4 = 0.5 (not detected)
+                  // Jaccard: intersection / union = 2 / 4 = 0.5 (same, but more accurate for different lengths)
+                  // Better: Use intersection over min for containment detection
+                  const intersection = new Set([...wordsCurrent].filter(w => wordsPrev.has(w)));
+                  const union = new Set([...wordsCurrent, ...wordsPrev]);
+                  
+                  // Jaccard similarity: intersection / union
+                  const jaccardSimilarity = intersection.size / union.size;
+                  
+                  // FIXED: Check containment correctly - verify smaller sentence is truly contained AND significant
+                  // Previous calculation incorrectly identified subsets as repetitions
+                  // Example: "Education" vs "What is your Education level?" would incorrectly match
+                  // Fix: Require that smaller sentence is both contained AND represents significant portion of larger
+                  const smallerSet = wordsCurrent.size <= wordsPrev.size ? wordsCurrent : wordsPrev;
+                  const largerSet = wordsCurrent.size > wordsPrev.size ? wordsCurrent : wordsPrev;
+                  const smallerInLarger = [...smallerSet].every(w => largerSet.has(w));
+                  
+                  // FIXED: When smallerInLarger is true, intersection.size always equals smallerSet.size
+                  // This made containmentRatio always 1.0, causing false positives
+                  // Solution: Only consider it repetition if smaller is at least 70% of larger sentence length
+                  // This prevents single-word sentences from matching longer sentences
+                  const sizeRatio = smallerSet.size / largerSet.size;
+                  const isSignificantContainment = smallerInLarger && sizeRatio >= 0.7;
+                  
+                  // Consider it repetition if Jaccard > 0.8 OR (smaller is significantly contained in larger)
+                  return jaccardSimilarity > 0.8 || isSignificantContainment;
                 });
 
                 if (isRepetition) {
                   repetitionCount++;
                   console.warn(`[REPETITION DETECTED] Sentence #${repetitionCount}: "${completeSentence.substring(0, 50)}..."`);
+                  
+                  // FIXED: Do NOT add repetitive sentences to lastSentences
+                  // Only track sentences that were actually sent to the user
+                  // Adding skipped sentences pollutes the tracking array and can cause false positives
+                  // when legitimate sentences happen to match previously-skipped repetitions
                   
                   // If we detect 2+ repetitions, stop the stream to prevent loop
                   if (repetitionCount >= 2) {
@@ -328,6 +358,7 @@ wss.on("connection", async (ws: WebSocket, req) => {
                 }
 
                 // Track last 3 sentences (for repetition detection)
+                // Only add sentences that were actually sent to the user
                 lastSentences.push(completeSentence);
                 if (lastSentences.length > 3) {
                   lastSentences.shift(); // Keep only last 3
