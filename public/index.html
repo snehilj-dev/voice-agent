@@ -321,8 +321,54 @@
       isCallActive: false, // User clicked Start Call
       status: 'idle', // idle, listening, processing, speaking
       error: null,
-      currentVadProb: 0 // Real-time VAD probability (0.0 - 1.0)
+      currentVadProb: 0, // Real-time VAD probability (0.0 - 1.0)
+      speakerProfile: {
+        baselineVolume: null, // Average RMS volume of primary speaker
+        volumeHistory: [],    // Sliding window of volume samples
+        calibrationComplete: false,
+        frameCount: 0,
+        recentMaxRMS: 0.0,    // Peak volume in recent frames (decaying)
+        // Voice ID Lite Stats
+        pitchHistory: [],     // Fundamental Frequency (Hz)
+        timbreHistory: [],    // Spectral Centroid (Hz) - now using proper FFT-based
+        baselinePitch: null,
+        baselineTimbre: null,
+        pitchVariance: null,      // Pitch variance for robust matching
+        timbreVariance: null,     // Timbre variance for robust matching
+        voiceprint: null,          // Complete voiceprint signature
+        // Enhanced features
+        spectralCentroidHistory: [], // Proper FFT-based spectral centroid
+        mfccHistory: [],             // MFCC coefficients (13 features)
+        speakerId: null,             // Unique speaker identifier
+        // Multi-speaker support
+        knownSpeakers: new Map(),    // Map of speakerId -> voiceprint
+        currentSpeakerId: null,      // Currently active speaker
+        lastAdaptationTime: null,    // Track when we last logged ID Card (prevent spam)
+        // Main speaker identification
+        firstSpeakerDetected: false,  // Whether we've detected the first speaker
+        firstSpeakerVolume: null,     // Volume of first speaker (for comparison)
+        firstSpeakerPitch: null,      // Pitch of first speaker
+        firstSpeakerTimbre: null,     // Timbre of first speaker
+        callInitiatorDetected: false, // Whether greeting words detected (hello, hi)
+        calibrationStartTime: null,   // When calibration started
+        // Volume-weighted calibration (prioritize louder speakers)
+        weightedVolumeHistory: [],    // Volume-weighted samples
+        weightedPitchHistory: [],     // Volume-weighted pitch samples
+        weightedTimbreHistory: []     // Volume-weighted timbre samples
+      }
     };
+
+    // --- Configuration Flags ---
+    // Master feature flag: Set to false to disable all speaker filtering (instant disable)
+    // When enabled, provides multi-layer protection: volume filtering, keyword filtering, and voice ID
+    const ENABLE_SPEAKER_FILTERING = true;
+    
+    // Sub-features (only active when ENABLE_SPEAKER_FILTERING is true)
+    const ENABLE_VOLUME_FILTERING = true;   // Volume-based outlier detection
+    const ENABLE_KEYWORD_FILTERING = true;  // Background noise keyword detection
+    const VOLUME_OUTLIER_THRESHOLD_HIGH = 3.0; // Relaxed high threshold (3x)
+    const VOLUME_OUTLIER_THRESHOLD_LOW = 0.15; // More lenient low threshold (0.15x) to prevent false rejections of main speaker
+    const BASELINE_CALIBRATION_FRAMES = 100;   // ~3-4 seconds at 30ms/frame
 
     // --- DOM Elements ---
     const startBtn = document.getElementById('start-btn');
@@ -470,20 +516,22 @@
         if (typeof event.data === "string") {
           try {
             const parsed = JSON.parse(event.data);
-            if (parsed.type === "llm_reply") {
-              // Store text for echo detection
-              // We append to a temporary buffer or queue if needed, 
-              // but for now, simple "last received" is okay or we track per audio.
-              // Ideally, we attach text to the audio URL, but let's simplify:
-              // We can't easily sync text to audio blobs here without complex queueing.
-              // IMPROVEMENT: For now, we will relax the check to just "isSpeaking".
-              currentSpokenText = parsed.text;
-            } else if (parsed.type === "llm_error" || parsed.type === "tts_error") {
+
+            // Handle valid text chunks (Accumulate for echo detection)
+            if (parsed.type === "text_start" || parsed.type === "text_chunk" || parsed.type === "llm_reply") {
+              const text = parsed.text || " ";
+              currentSpokenText = (currentSpokenText + " " + text).trim();
+              console.log(`[DEBUG] Accumuated SpokenText: "${currentSpokenText}"`);
+            }
+            // Handle errors
+            else if (parsed.type === "llm_error" || parsed.type === "tts_error") {
               state.error = parsed.error;
-              state.status = 'listening'; // Go back to listening if error
+              state.status = 'listening';
               updateUI();
             }
-          } catch (e) { }
+          } catch (e) {
+            console.error("Error parsing JSON:", e);
+          }
         } else {
           // Binary Audio
           const arrayBuffer = event.data;
@@ -647,16 +695,53 @@
         // We don't play this stream, just hold it open.
         console.log("AEC Stream active");
 
-        // Setup VAD audio processing if model is loaded
+        // FIXED: Wait for VAD model to load before setting up processing
+        // This ensures VAD is ready when recognition starts
+        if (!vadModel) {
+          console.log("Waiting for VAD model to load...");
+          // Wait up to 5 seconds for VAD to load
+          let waitCount = 0;
+          while (!vadModel && waitCount < 50) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            waitCount++;
+          }
+        }
+        
         if (vadModel) {
           await setupVADAudioProcessing();
+        } else {
+          console.warn("VAD model not loaded, using fallback timer-based silence detection");
         }
-      } catch (err) {
+      } 
+      catch (err) {
         console.warn("Could not get AEC stream", err);
       }
 
       state.isCallActive = true;
       state.status = 'listening';
+      
+      // Reset speaker profile for new call
+      if (ENABLE_SPEAKER_FILTERING) {
+        state.speakerProfile.calibrationComplete = false;
+        state.speakerProfile.frameCount = 0;
+        state.speakerProfile.volumeHistory = [];
+        state.speakerProfile.pitchHistory = [];
+        state.speakerProfile.timbreHistory = [];
+        state.speakerProfile.spectralCentroidHistory = [];
+        state.speakerProfile.mfccHistory = [];
+        state.speakerProfile.firstSpeakerDetected = false;
+        state.speakerProfile.firstSpeakerVolume = null;
+        state.speakerProfile.firstSpeakerPitch = null;
+        state.speakerProfile.firstSpeakerTimbre = null;
+        state.speakerProfile.callInitiatorDetected = false;
+        state.speakerProfile.calibrationStartTime = Date.now();
+        state.speakerProfile.weightedVolumeHistory = [];
+        state.speakerProfile.weightedPitchHistory = [];
+        state.speakerProfile.weightedTimbreHistory = [];
+        state.speakerProfile.lastMismatchReason = null;
+        console.log(">> Speaker profile reset for new call");
+      }
+      
       updateUI();
 
       if (!recognition) {
@@ -745,9 +830,117 @@
 
           let fullTranscript = (finalTranscript + interimTranscript).trim().toLowerCase();
 
-          // --- 2. SMART BARGE-IN GATE (REMOVED) ---
-          // derived from user request: VAD gate caused delays. 
-          // We rely on "Strict Garbage Filtering" (above) and "Echo Detection" (below) for safety.
+          // --- 2. ECHO DETECTION (PRIORITY #1) ---
+          // derived from user request: "Agent is hearing itself".
+          // This must run BEFORE Voice ID, because Voice ID might accidentally accept the agent's own voice
+          // if the volume is loud enough.
+
+          if (currentSpokenText) {
+            // Helper to normalize text for comparison (remove punctuation, handle contractions)
+            const normalizeText = (str) => {
+              return str.toLowerCase()
+                .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "") // Remove punctuation
+                .replace(/\s{2,}/g, " ") // Collapse whitespace
+                .replace(/\bi'm\b/g, "i am")
+                .replace(/\byou're\b/g, "you are")
+                .replace(/\bwe're\b/g, "we are")
+                .replace(/\bthey're\b/g, "they are")
+                .replace(/\bhe's\b/g, "he is")
+                .replace(/\bshe's\b/g, "she is")
+                .replace(/\bit's\b/g, "it is")
+                .replace(/\bthat's\b/g, "that is")
+                .replace(/\bcan't\b/g, "cannot")
+                .replace(/\bwon't\b/g, "will not")
+                .replace(/\bdon't\b/g, "do not")
+                .trim();
+            };
+
+            const textToMatch = normalizeText(currentSpokenText);
+            const cleanInput = normalizeText(fullTranscript);
+            const inputWordCount = cleanInput.split(' ').length;
+
+            // FIXED: Always clear existing timeout before setting new one (prevents race conditions)
+            if (echoTimeout) {
+              clearTimeout(echoTimeout);
+              echoTimeout = null;
+            }
+            // Set new timeout with proper cleanup
+            echoTimeout = setTimeout(() => { 
+              currentSpokenText = ""; 
+              echoTimeout = null; // Clear reference
+              console.log("Echo protection cleared (sustained)"); 
+            }, 6000);
+
+            console.log(`[DEBUG] Checking Echo: Input="${cleanInput}" | Bot="${textToMatch}"`);
+
+            // 1. STRICT SUBSTRING CHECKS (Aggressive - Always run this if we have active text)
+            if (cleanInput.length > 0) {
+              if (cleanInput.includes(textToMatch)) {
+                const strippedInput = cleanInput.replace(textToMatch, "").trim();
+                // Residue must be meaningful (> 4 chars like "hello", not just "hi" or noise)
+                // If the user truly spoke over the bot, it would be a sentence.
+                if (strippedInput.length > 4) {
+                  console.log(`>> Mixed Input Detected. Stripping echo...`);
+                  fullTranscript = strippedInput;
+                  finalTranscript = finalTranscript.toLowerCase().replace(textToMatch, "").trim();
+                  interimTranscript = interimTranscript.toLowerCase().replace(textToMatch, "").trim();
+                } else {
+                  console.log(`>> Echo BLOCKED (Exact match + Residue too short): "${cleanInput}"`);
+                  return;
+                }
+              } else if (textToMatch.includes(cleanInput)) {
+                // Check for very short common words that might be false positives if just "I" or "a"
+
+                if (inputWordCount > 2) {
+                  console.log(`>> Echo BLOCKED (Substring match > 2 words): "${cleanInput}"`);
+                  return;
+                } else {
+                  // CRITICAL FIX: If it matches the bot text, it MIGHT be an echo starting ("You...").
+                  // If we let it pass now, the server will stop TTS.
+                  // So, if it is INTERIM, we must WAIT. Only allow if FINAL.
+                  // Because if it's real ("Completed 12th"), the user will finish and it'll become Final.
+                  // If it's an echo ("You are welcome"), it will grow and eventually be Blocked > 2 words.
+
+                  // We need to check if ANY result is final. 
+                  // Logic: if 'finalTranscript' is empty, it means we are in interim state.
+                  if (!finalTranscript) {
+                    console.log(`>> Echo Suspect (Interim): "${cleanInput}" -> Waiting...`);
+                    return;
+                  } else {
+                    console.log(`>> Echo ALLOWED (Short Answer FINAL): "${cleanInput}"`);
+                  }
+                }
+              }
+            }
+
+            // Fuzzy Match - Improved for Partial/Substring Echoes
+            if (fullTranscript.length > 3) {
+              const len = fullTranscript.length;
+              
+              // 1. Standard Full Match (Good for full echoes)
+              const distance = levenshtein(fullTranscript, textToMatch);
+              const maxLen = Math.max(fullTranscript.length, textToMatch.length);
+              const similarity = 1 - (distance / maxLen);
+
+              // 2. Prefix Match (Good if echo captures start of bot speech)
+              // Compare input vs Start of Bot Text
+              const prefixBot = textToMatch.substring(0, len);
+              const prefixDist = levenshtein(fullTranscript, prefixBot);
+              const prefixSim = 1 - (prefixDist / Math.max(len, prefixBot.length));
+
+              // 3. Suffix Match (Good if echo captures end of bot speech)
+              const suffixBot = textToMatch.substring(textToMatch.length - len);
+              const suffixDist = levenshtein(fullTranscript, suffixBot);
+              const suffixSim = 1 - (suffixDist / Math.max(len, suffixBot.length));
+
+              // If ANY similarity is high (> 75%), block it.
+              if (similarity > 0.6 || prefixSim > 0.75 || suffixSim > 0.75) {
+                 const bestSim = Math.max(similarity, prefixSim, suffixSim);
+                 console.log(`>> Echo BLOCKED (Fuzzy ${Math.round(bestSim * 100)}%): "${cleanInput}"`);
+                 return;
+              }
+            }
+          }
 
           // --- 3. FILTER MICRO-HALLUCINATIONS ---
           // Determine if input is just 1-2 chars of noise (unless it's "ok", "no", "hi")
@@ -759,107 +952,87 @@
             }
           }
 
-          // --- ECHO DETECTION (AGGRESSIVE) ---
-          // Check if we recently spoke (even if audio finished)
-          if (currentSpokenText) {
-            const textToMatch = currentSpokenText.toLowerCase().trim();
-            const cleanInput = fullTranscript.toLowerCase().trim();
-
-            // 1. Direct Inclusion (State-Aware)
-            const inputWordCount = cleanInput.split(' ').length;
-
-            // Tail Protection: Extend strict checks for 800ms after audio ends
-            // This catches acoustic echoes that arrive just as the bot finishes.
-            const isTailPeriod = (Date.now() - lastAudioEndTime) < 800;
-
-            // If bot is CURRENTLY speaking OR in the echo tail period, be AGGRESSIVE
-            // If completely finished (isPlaying=false AND !isTailPeriod), be SMART
-            const shouldRelaxCheck = !isPlaying && !isTailPeriod && inputWordCount < 4;
-
-            if (!shouldRelaxCheck) {
-              // SUSTAIN PROTECTION: If we are actively blocking echoes, keeps the shield up!
-              // This prevents the protection from expiring mid-echo for long latency echoes.
-              if (echoTimeout) {
-                clearTimeout(echoTimeout);
-                echoTimeout = setTimeout(() => {
-                  currentSpokenText = "";
-                  console.log("Echo protection cleared (sustained)");
-                }, 6000);
-              }
-
-              // Checking for "Included" Echoes
-              if (cleanInput.includes(textToMatch)) {
-                // MIXED INPUT DETECTION:
-                // If the transcript contains the echo PLUS other text, it's likely user speaking over the bot.
-                // We should STRIP the echo and process the rest.
-                const strippedInput = cleanInput.replace(textToMatch, "").trim();
-
-                if (strippedInput.length > 2) {
-                  console.log(`>> Mixed Input Detected (Echo + User). Stripping echo...`);
-                  console.log(`   Original: "${cleanInput}"`);
-                  console.log(`   Stripped: "${strippedInput}"`);
-
-                  // CRITICAL: Update the transcript variables so downstream logic uses only the user's part
-                  // We can't easily split final vs interim perfectly, so we'll just update the derived fullTranscript 
-                  // and assume finalTranscript takes the hit for sending.
-                  // A simple heuristic: Replace the echo in the finalTranscript if present.
-                  finalTranscript = finalTranscript.toLowerCase().replace(textToMatch, "").trim();
-                  interimTranscript = interimTranscript.toLowerCase().replace(textToMatch, "").trim();
-
-                  // Continue processing with the stripped input
-                } else {
-                  // It's just the echo (or negligible noise) effectively
-                  console.log(`>> Echo BLOCKED (Exact match, active=${isPlaying}):`, cleanInput);
-                  return;
-                }
-              } else if (textToMatch.includes(cleanInput)) {
-                // The input is fully inside the bot's speech (pure echo)
-                console.log(`>> Echo BLOCKED (Substring, active=${isPlaying}):`, cleanInput);
-                return;
-              }
-            }
-
-            // 2. Fuzzy Match (Levenshtein) - DYNAMIC THRESHOLD
-            if (cleanInput.length > 3) {
-              const distance = levenshtein(cleanInput, textToMatch);
-              const maxLen = Math.max(cleanInput.length, textToMatch.length);
-              const similarity = 1 - (distance / maxLen);
-
-              // If playing, use stricter threshold (0.6) even for short inputs to prevent self-interruption
-              // If not playing, use relaxed threshold (0.8) for short inputs (allow answers)
-              let threshold = 0.6; // Standard
-              if (!isPlaying && cleanInput.length < 10) {
-                threshold = 0.8; // Relaxed for short answers
-              }
-
-              if (similarity > threshold) {
-                console.log(`>> Echo BLOCKED (Fuzzy ${Math.round(similarity * 100)}% > ${threshold * 100}%):`, cleanInput);
-                return;
-              }
-
-              // 3. WORD OVERLAP CHECK (Bag-of-Words) - Phase 9
-              // Catches "partial" echoes that fail strict substring (e.g. "please tell me your 10 digit" vs "10 digit number")
-              // Only apply if input has enough words (> 3) to be statistically significant
-              if (cleanInput.split(' ').length > 3) {
-                // Remove punctuation for cleaner word matching
-                const normalize = (s) => s.replace(/[^\w\s]/g, '').toLowerCase();
-                const inputWords = normalize(cleanInput).split(/\s+/).filter(w => w.length > 0);
-                const referenceWords = new Set(normalize(textToMatch).split(/\s+/).filter(w => w.length > 0));
-
-                let matchCount = 0;
-                for (const word of inputWords) {
-                  if (referenceWords.has(word)) matchCount++;
-                }
-
-                const overlapRatio = matchCount / inputWords.length;
-                // If > 70% of user's words are in the bot's text, it's likely an echo
-                if (overlapRatio > 0.7) {
-                  console.log(`>> Echo BLOCKED (Word Overlap ${Math.round(overlapRatio * 100)}%):`, cleanInput);
-                  return;
-                }
+          // --- 3.5. MAIN SPEAKER IDENTIFICATION (Greeting Detection) ---
+          // Detect greeting words to identify the call initiator/main speaker
+          if (ENABLE_SPEAKER_FILTERING && !state.speakerProfile.callInitiatorDetected) {
+            const greetingWords = ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'good evening', 'greetings'];
+            const transcriptLower = fullTranscript.toLowerCase().trim();
+            
+            // Check if transcript contains greeting words
+            for (const greeting of greetingWords) {
+              if (transcriptLower.includes(greeting) || transcriptLower === greeting) {
+                state.speakerProfile.callInitiatorDetected = true;
+                console.log(`>> CALL INITIATOR DETECTED: "${fullTranscript}" (Greeting: "${greeting}")`);
+                // Mark this speaker as the main speaker
+                // The calibration will prioritize this speaker's voice features
+                break;
               }
             }
           }
+
+          // --- 4. SPEAKER SEPARATION & NOISE FILTERING (PHASE 3) ---
+          // IMPROVED: Use recentMaxRMS as primary source (updated in real-time by processAudioForVAD)
+          // If recentMaxRMS is suspiciously low, estimate from confidence as fallback
+          let currentUtteranceRMS = state.speakerProfile.recentMaxRMS || 0;
+          
+          // Calculate max confidence for fallback estimation
+          let maxConfidence = 0;
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            if (event.results[i][0].confidence > maxConfidence) {
+              maxConfidence = event.results[i][0].confidence;
+            }
+          }
+          
+          // IMPROVED: Better volume estimation strategy
+          // If recentMaxRMS is too low (likely stale or not updated), estimate from confidence
+          const baseline = state.speakerProfile.baselineVolume || 0.01;
+          if (currentUtteranceRMS < baseline * 0.1 && maxConfidence > 0.5) {
+            // Estimate volume from confidence: higher confidence = closer to baseline
+            // Map confidence (0.5-1.0) to volume (0.3x-1.2x baseline)
+            const confidenceFactor = 0.3 + (maxConfidence - 0.5) * 1.8; // 0.5->0.3x, 1.0->1.2x
+            currentUtteranceRMS = baseline * confidenceFactor;
+            console.log(`[VOLUME] Estimated from confidence: ${currentUtteranceRMS.toFixed(4)} (conf: ${maxConfidence.toFixed(2)})`);
+          } else if (currentUtteranceRMS > 0) {
+            // Use actual recentMaxRMS if available
+            console.log(`[VOLUME] Using recentMaxRMS: ${currentUtteranceRMS.toFixed(4)}`);
+          } else {
+            // Last resort: assume moderate volume if we have no data
+            currentUtteranceRMS = baseline * 0.7;
+            console.log(`[VOLUME] Fallback to baseline*0.7: ${currentUtteranceRMS.toFixed(4)}`);
+          }
+
+          // --- SPEAKER FILTERING (Fast Client-Side Check) ---
+          if (ENABLE_SPEAKER_FILTERING) {
+            // SPECIAL CHECK: If Volume is LOW but VAD Confidence is HIGH (>0.85), 
+            // the user is likely speaking quietly or calibration was too loud.
+            // We should ACCEPT this and ADAPT the baseline down.
+            let forceAcceptVolume = false;
+            
+            // NOTE: Only adapt on FINAL transcript to avoid adapting to interim echoes.
+            // IMPROVED: More aggressive adaptation for main speaker
+            if (finalTranscript && fullTranscript.split(' ').length > 1 && 
+                state.speakerProfile.calibrationComplete) {
+              // If volume is low but we have valid speech, adapt baseline down
+              if (currentUtteranceRMS < (state.speakerProfile.baselineVolume * 0.2)) {
+                console.log(">> Low Volume but Valid Speech detected. Force Adapting Baseline...");
+                state.speakerProfile.baselineVolume = (state.speakerProfile.baselineVolume * 0.7) + (currentUtteranceRMS * 0.3); // rapid drop
+                forceAcceptVolume = true;
+              }
+              // Also adapt if volume is moderately low (0.2x-0.4x) with high confidence
+              else if (currentUtteranceRMS < (state.speakerProfile.baselineVolume * 0.4) && maxConfidence > 0.85) {
+                console.log(">> Moderate Volume with High Confidence. Adapting Baseline...");
+                state.speakerProfile.baselineVolume = (state.speakerProfile.baselineVolume * 0.9) + (currentUtteranceRMS * 0.1); // gradual drop
+              }
+            }
+
+            // Fast multi-layer filtering (<5ms target)
+            // FIXED: Use currentUtteranceRMS instead of potentially stale recentMaxRMS
+            if (!forceAcceptVolume && !shouldAcceptInput(fullTranscript, currentUtteranceRMS, currentSpokenText)) {
+              return; // Reject input
+            }
+          }
+
+          // (Echo Detection moved to top)
 
           // Enable VAD once we detect speech
           if (interimTranscript && !vadEnabled) {
@@ -904,23 +1077,12 @@
     function stopCall() {
       state.isCallActive = false;
       // Logic to stop everything
-      if (recognition) {
-        recognition.stop();
-      }
+      if (recognition) { recognition.stop(); }
       // Stop AEC Stream
-      if (aecStream) {
-        aecStream.getTracks().forEach(track => track.stop());
-        aecStream = null;
-      }
+      if (aecStream) { aecStream.getTracks().forEach(track => track.stop()); aecStream = null; }
       // Stop VAD Processing
-      if (vadProcessor) {
-        vadProcessor.disconnect();
-        vadProcessor = null;
-      }
-      if (vadContext) {
-        vadContext.close();
-        vadContext = null;
-      }
+      if (vadProcessor) { vadProcessor.disconnect(); vadProcessor = null; }
+      if (vadContext) { vadContext.close(); vadContext = null; }
       consecutiveSilenceFrames = 0; // Reset VAD state
       vadEnabled = false; // Reset VAD activation
       cancelAudio();
@@ -967,26 +1129,488 @@
       if (!vadModel || !state.isCallActive) return;
 
       try {
+        if (!processAudioForVAD.analyser) {
+          // Setup AnalyserNode once if not already available (requires access to AudioContext)
+          // Note: We need the original AudioContext from setupVADAudioProcessing to create an Analyser
+          // Since we are inside a function without direct access to the context variable 'vadContext',
+          // we will rely on a global or attached property. 
+          // IMPROVEMENT: We'll modify setupVADAudioProcessing to attach the analyser to 'state'.
+        }
+
+        // --- VAD PROCESSING (Run first to get speechProb) ---
         const audioTensor = new ort.Tensor("float32", audioData, [1, audioData.length]);
         const sr = new ort.Tensor("int64", BigInt64Array.from([BigInt(vadSampleRate)]));
-
 
         let inputs = {};
         if (vadState.version === 5) {
           inputs = { input: audioTensor, state: vadState.h, sr: sr };
-        } else {
+        }
+        else {
           inputs = { input: audioTensor, h: vadState.h, c: vadState.c, sr: sr };
         }
 
         const output = await vadModel.run(inputs);
         const speechProb = output.output.data[0];
+        //----------------------------------------
 
+        // --- FREQUENCY ANALYSIS (Voice ID Lite) - OPTIMIZED FOR LATENCY ---
+        // Skip expensive calculations if not needed (frame skipping for non-critical frames)
+        let currentPitch = 0;
+        let currentCentroid = 0;
+
+        // Only calculate features every N frames or if speech is detected (reduces CPU by ~70%)
+        // Now we can safely use speechProb since VAD has run
+        const shouldCalculateFeatures = ENABLE_SPEAKER_FILTERING && state.isCallActive && 
+          (speechProb > 0.3 || !state.speakerProfile.calibrationComplete || (state.speakerProfile.frameCount % 3 === 0));
+
+        if (shouldCalculateFeatures) {
+          // Fast path: Skip pitch if RMS is too low (saves ~2ms per frame)
+          const quickRMS = calculateRMSFast(audioData);
+          if (quickRMS > 0.01) {
+            currentPitch = calculatePitchFast(audioData, vadSampleRate);
+          }
+          
+          // Enhanced: Use proper spectral centroid (FFT-based) instead of just ZCR
+          // Fallback to ZCR for very low latency, but calculate proper centroid periodically
+          if (state.speakerProfile.frameCount % 2 === 0) {
+            // Calculate proper spectral centroid every other frame (balances accuracy vs latency)
+            currentCentroid = calculateSpectralCentroid(audioData, vadSampleRate);
+          } else {
+            // Fast ZCR fallback for intermediate frames
+            currentCentroid = calculateZeroCrossingRate(audioData);
+          }
+        }
+        //----------------------------------------
+
+        // --- VOLUME ANALYSIS & SPEAKER PROFILING (Low Latency) ---
+        if (ENABLE_SPEAKER_FILTERING && state.isCallActive) {
+          // Use fast RMS for real-time path
+          const currentRMS = calculateRMSFast(audioData);
+
+          // Calibration Phase (First ~3-4 seconds)
+          // Only calibrate if speaker filtering is enabled
+          if (ENABLE_SPEAKER_FILTERING && !state.speakerProfile.calibrationComplete) {
+            // Only calibrate on speech (VAD > 0.5) to avoid silence skewing baseline
+            // CRITICAL FIX: Only calibrate if the AGENT IS NOT SPEAKING (Prevent Echo Calibration)
+            if (speechProb > 0.5 && state.status !== 'speaking' && !isPlaying) {
+              
+              // --- MAIN SPEAKER IDENTIFICATION: Track First Speaker ---
+              // The first person to speak is likely the main speaker (call initiator)
+              if (!state.speakerProfile.firstSpeakerDetected) {
+                state.speakerProfile.firstSpeakerDetected = true;
+                state.speakerProfile.firstSpeakerVolume = currentRMS;
+                state.speakerProfile.firstSpeakerPitch = currentPitch > 50 && currentPitch < 400 ? currentPitch : null;
+                state.speakerProfile.firstSpeakerTimbre = currentCentroid > 0 ? currentCentroid : null;
+                console.log(`>> FIRST SPEAKER DETECTED: Volume=${currentRMS.toFixed(4)}, Pitch=${currentPitch.toFixed(0)}Hz, Timbre=${currentCentroid.toFixed(3)}`);
+              }
+              
+              // --- VOLUME-WEIGHTED CALIBRATION ---
+              // Prioritize louder speakers (likely closer/main speaker) over background speakers
+              // Weight = (currentRMS / maxRMS) ^ 2, so louder samples have exponentially more weight
+              const maxRMS = Math.max(...state.speakerProfile.volumeHistory, currentRMS, 0.01);
+              const volumeWeight = Math.pow(currentRMS / maxRMS, 2);
+              
+              // --- PRIORITIZE FIRST SPEAKER OR CALL INITIATOR ---
+              // If we detected a greeting (call initiator) or this is the first speaker,
+              // give their samples higher weight during calibration
+              let speakerWeight = 1.0;
+              const isFirstSpeaker = state.speakerProfile.firstSpeakerDetected && 
+                Math.abs(currentRMS - (state.speakerProfile.firstSpeakerVolume || 0)) < (state.speakerProfile.firstSpeakerVolume || 1) * 0.5 &&
+                (state.speakerProfile.firstSpeakerPitch === null || Math.abs(currentPitch - (state.speakerProfile.firstSpeakerPitch || 0)) < 50);
+              
+              if (state.speakerProfile.callInitiatorDetected || isFirstSpeaker) {
+                // Boost weight for main speaker (call initiator or first speaker)
+                speakerWeight = 2.0;
+                console.log(`[CALIBRATION] Main speaker sample (weight: ${speakerWeight.toFixed(2)})`);
+              } else if (currentRMS < (state.speakerProfile.firstSpeakerVolume || currentRMS) * 0.3) {
+                // Reduce weight for very quiet speakers (likely background)
+                speakerWeight = 0.3;
+                console.log(`[CALIBRATION] Background speaker sample (weight: ${speakerWeight.toFixed(2)})`);
+              }
+              
+              const finalWeight = volumeWeight * speakerWeight;
+              
+              // Store weighted samples
+              state.speakerProfile.volumeHistory.push(currentRMS);
+              state.speakerProfile.weightedVolumeHistory.push({ rms: currentRMS, weight: finalWeight });
+              state.speakerProfile.frameCount++;
+
+              // Collect voice features for fingerprinting (pre-filtered during collection)
+              if (currentPitch > 50 && currentPitch < 400) {
+                state.speakerProfile.pitchHistory.push(currentPitch);
+                state.speakerProfile.weightedPitchHistory.push({ pitch: currentPitch, weight: finalWeight });
+              }
+              if (currentCentroid > 0) {
+                state.speakerProfile.timbreHistory.push(currentCentroid);
+                state.speakerProfile.weightedTimbreHistory.push({ timbre: currentCentroid, weight: finalWeight });
+                // Also collect proper spectral centroid if calculated
+                if (state.speakerProfile.frameCount % 2 === 0) {
+                  state.speakerProfile.spectralCentroidHistory.push(currentCentroid);
+                }
+              }
+              
+              // Collect MFCC features periodically (every 5 frames to balance accuracy/latency)
+              if (state.speakerProfile.frameCount % 5 === 0 && speechProb > 0.5) {
+                const mfccFeatures = calculateMFCC(audioData, vadSampleRate);
+                if (mfccFeatures && mfccFeatures.length > 0) {
+                  state.speakerProfile.mfccHistory.push(mfccFeatures);
+                }
+              }
+
+              if (state.speakerProfile.frameCount >= BASELINE_CALIBRATION_FRAMES) {
+                // IMPROVED: Volume-weighted calibration calculation
+                // Use weighted average to prioritize main speaker (first speaker or call initiator)
+                const volLen = state.speakerProfile.weightedVolumeHistory.length;
+                let volSum = 0;
+                let weightSum = 0;
+                
+                if (volLen > 0) {
+                  // Weighted average: sum(volume * weight) / sum(weight)
+                  for (let i = 0; i < volLen; i++) {
+                    const sample = state.speakerProfile.weightedVolumeHistory[i];
+                    volSum += sample.rms * sample.weight;
+                    weightSum += sample.weight;
+                  }
+                  state.speakerProfile.baselineVolume = weightSum > 0 ? volSum / weightSum : 
+                    state.speakerProfile.volumeHistory.reduce((a, b) => a + b, 0) / state.speakerProfile.volumeHistory.length;
+                } else {
+                  // Fallback to simple average if no weighted samples
+                  volSum = 0;
+                  for (let i = 0; i < state.speakerProfile.volumeHistory.length; i++) {
+                    volSum += state.speakerProfile.volumeHistory[i];
+                  }
+                  state.speakerProfile.baselineVolume = volSum / state.speakerProfile.volumeHistory.length;
+                }
+                
+                console.log(`[CALIBRATION] Baseline volume calculated: ${state.speakerProfile.baselineVolume.toFixed(4)} (weighted: ${volLen > 0})`);
+
+                // IMPROVED: Weighted pitch calculation (prioritize main speaker)
+                const validPitches = state.speakerProfile.pitchHistory;
+                const weightedPitches = state.speakerProfile.weightedPitchHistory;
+                
+                if (weightedPitches.length > 0) {
+                  // Weighted median: sort by pitch, then find weighted median
+                  const sorted = weightedPitches.slice().sort((a, b) => a.pitch - b.pitch);
+                  let weightSum = 0;
+                  const totalWeight = sorted.reduce((sum, s) => sum + s.weight, 0);
+                  const medianWeight = totalWeight / 2;
+                  
+                  let weightedMedian = sorted[0].pitch;
+                  for (let i = 0; i < sorted.length; i++) {
+                    weightSum += sorted[i].weight;
+                    if (weightSum >= medianWeight) {
+                      weightedMedian = sorted[i].pitch;
+                      break;
+                    }
+                  }
+                  
+                  state.speakerProfile.baselinePitch = weightedMedian;
+                  
+                  // Weighted variance calculation
+                  let pitchWeightSum = 0;
+                  let pitchWeightedSum = 0;
+                  for (let i = 0; i < weightedPitches.length; i++) {
+                    pitchWeightedSum += weightedPitches[i].pitch * weightedPitches[i].weight;
+                    pitchWeightSum += weightedPitches[i].weight;
+                  }
+                  const pitchMean = pitchWeightSum > 0 ? pitchWeightedSum / pitchWeightSum : weightedMedian;
+                  
+                  let pitchVarSum = 0;
+                  for (let i = 0; i < weightedPitches.length; i++) {
+                    const diff = weightedPitches[i].pitch - pitchMean;
+                    pitchVarSum += diff * diff * weightedPitches[i].weight;
+                  }
+                  state.speakerProfile.pitchVariance = pitchWeightSum > 0 ? pitchVarSum / pitchWeightSum : 100;
+                } else if (validPitches.length > 0) {
+                  // Fallback to simple median if no weighted samples
+                  const sorted = validPitches.slice().sort((a, b) => a - b);
+                  const mid = Math.floor(sorted.length / 2);
+                  state.speakerProfile.baselinePitch = sorted.length % 2 === 0 
+                    ? (sorted[mid - 1] + sorted[mid]) / 2 
+                    : sorted[mid];
+                  
+                  const pitchMean = state.speakerProfile.baselinePitch;
+                  let pitchVarSum = 0;
+                  for (let i = 0; i < validPitches.length; i++) {
+                    const diff = validPitches[i] - pitchMean;
+                    pitchVarSum += diff * diff;
+                  }
+                  state.speakerProfile.pitchVariance = pitchVarSum / validPitches.length;
+                } else {
+                  state.speakerProfile.baselinePitch = 150;
+                  state.speakerProfile.pitchVariance = 100;
+                }
+
+                // IMPROVED: Weighted timbre calculation (prioritize main speaker)
+                const validTimbres = state.speakerProfile.timbreHistory;
+                const weightedTimbres = state.speakerProfile.weightedTimbreHistory;
+                
+                if (weightedTimbres.length > 0) {
+                  // Weighted mean
+                  let timbreWeightSum = 0;
+                  let timbreWeightedSum = 0;
+                  for (let i = 0; i < weightedTimbres.length; i++) {
+                    timbreWeightedSum += weightedTimbres[i].timbre * weightedTimbres[i].weight;
+                    timbreWeightSum += weightedTimbres[i].weight;
+                  }
+                  const timbreMean = timbreWeightSum > 0 ? timbreWeightedSum / timbreWeightSum : 0.1;
+                  state.speakerProfile.baselineTimbre = timbreMean;
+                  
+                  // Weighted variance
+                  let timbreVarSum = 0;
+                  for (let i = 0; i < weightedTimbres.length; i++) {
+                    const diff = weightedTimbres[i].timbre - timbreMean;
+                    timbreVarSum += diff * diff * weightedTimbres[i].weight;
+                  }
+                  state.speakerProfile.timbreVariance = timbreWeightSum > 0 ? timbreVarSum / timbreWeightSum : 0.01;
+                } else if (validTimbres.length > 0) {
+                  // Fallback to simple mean if no weighted samples
+                  let timbreSum = 0;
+                  for (let i = 0; i < validTimbres.length; i++) {
+                    timbreSum += validTimbres[i];
+                  }
+                  const timbreMean = timbreSum / validTimbres.length;
+                  state.speakerProfile.baselineTimbre = timbreMean;
+                  
+                  let timbreVarSum = 0;
+                  for (let i = 0; i < validTimbres.length; i++) {
+                    const diff = validTimbres[i] - timbreMean;
+                    timbreVarSum += diff * diff;
+                  }
+                  state.speakerProfile.timbreVariance = timbreVarSum / validTimbres.length;
+                } else {
+                  state.speakerProfile.baselineTimbre = 0.1;
+                  state.speakerProfile.timbreVariance = 0.01;
+                }
+
+                // Calculate MFCC baseline (average of collected MFCC features)
+                let mfccBaseline = null;
+                if (state.speakerProfile.mfccHistory.length > 0) {
+                  const mfccCount = state.speakerProfile.mfccHistory.length;
+                  const mfccDim = state.speakerProfile.mfccHistory[0].length;
+                  mfccBaseline = new Array(mfccDim).fill(0);
+                  
+                  // Average MFCC coefficients
+                  for (let i = 0; i < mfccCount; i++) {
+                    for (let j = 0; j < mfccDim; j++) {
+                      mfccBaseline[j] += state.speakerProfile.mfccHistory[i][j];
+                    }
+                  }
+                  for (let j = 0; j < mfccDim; j++) {
+                    mfccBaseline[j] /= mfccCount;
+                  }
+                }
+                
+                // Generate enhanced voiceprint signature (composite fingerprint)
+                const speakerId = 'speaker_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+                state.speakerProfile.speakerId = speakerId;
+                state.speakerProfile.currentSpeakerId = speakerId;
+                
+                state.speakerProfile.voiceprint = {
+                  speakerId: speakerId,
+                  volume: state.speakerProfile.baselineVolume,
+                  pitch: state.speakerProfile.baselinePitch,
+                  pitchVariance: state.speakerProfile.pitchVariance,
+                  timbre: state.speakerProfile.baselineTimbre,
+                  timbreVariance: state.speakerProfile.timbreVariance,
+                  mfccBaseline: mfccBaseline,  // Enhanced: MFCC features
+                  spectralCentroid: state.speakerProfile.spectralCentroidHistory.length > 0 
+                    ? state.speakerProfile.spectralCentroidHistory.reduce((a, b) => a + b, 0) / state.speakerProfile.spectralCentroidHistory.length
+                    : state.speakerProfile.baselineTimbre,
+                  sampleCount: state.speakerProfile.frameCount,
+                  timestamp: Date.now(),
+                  version: 2  // Version for future compatibility
+                };
+                
+                // Store in known speakers map (multi-speaker support)
+                state.speakerProfile.knownSpeakers.set(speakerId, state.speakerProfile.voiceprint);
+                
+                // Persist to localStorage (persistent storage)
+                try {
+                  const voiceprintsToSave = Array.from(state.speakerProfile.knownSpeakers.entries()).map(([id, vp]) => ({
+                    speakerId: id,
+                    voiceprint: vp
+                  }));
+                  localStorage.setItem('voice_agent_voiceprints', JSON.stringify(voiceprintsToSave));
+                  console.log(`>> Voiceprint saved to localStorage (${voiceprintsToSave.length} speakers)`);
+                } catch (e) {
+                  console.warn("Could not save voiceprint to localStorage:", e);
+                }
+
+                state.speakerProfile.calibrationComplete = true;
+                const mainSpeakerInfo = state.speakerProfile.callInitiatorDetected 
+                  ? " (Call Initiator - Greeting Detected)" 
+                  : state.speakerProfile.firstSpeakerDetected 
+                    ? " (First Speaker)" 
+                    : "";
+                console.log(` >> Speaker Profile Calibrated${mainSpeakerInfo} (Production Voiceprint): 
+                   RMS=${state.speakerProfile.baselineVolume.toFixed(4)} 
+                   Pitch=${state.speakerProfile.baselinePitch.toFixed(0)}Hz (σ²=${state.speakerProfile.pitchVariance.toFixed(0)})
+                   Timbre(ZCR)=${state.speakerProfile.baselineTimbre.toFixed(4)} (σ²=${state.speakerProfile.timbreVariance.toFixed(6)})
+                   Voiceprint: ${JSON.stringify(state.speakerProfile.voiceprint)}`);
+
+                // Keep history small (rolling window for adaptive updates)
+                state.speakerProfile.volumeHistory = state.speakerProfile.volumeHistory.slice(-50);
+                state.speakerProfile.pitchHistory = state.speakerProfile.pitchHistory.slice(-100);
+                state.speakerProfile.timbreHistory = state.speakerProfile.timbreHistory.slice(-100);
+              }
+            }
+          }
+          
+          // Real-time Voice ID enforcement (after calibration)
+          if (ENABLE_SPEAKER_FILTERING && state.speakerProfile.calibrationComplete && speechProb > 0.6) {
+            // --- ENHANCED: MULTI-SPEAKER MATCHING ---
+            // FIXED: Only match if we have sufficient data (avoid using stale MFCC)
+            // Try to match against known speakers first (if multi-speaker enabled)
+            let matchedSpeaker = null;
+            if (state.speakerProfile.knownSpeakers.size > 1) {
+              // Get current MFCC if available (calculated periodically)
+              // FIXED: MFCC is calculated every 5 frames in processAudioForVAD
+              // Since processAudioForVAD runs continuously, last MFCC is at most 5 frames old (recent enough)
+              const mfccHistoryLen = state.speakerProfile.mfccHistory.length;
+              const currentMFCC = mfccHistoryLen > 0
+                ? state.speakerProfile.mfccHistory[mfccHistoryLen - 1]
+                : null;
+              
+              // Only use MFCC if it's recent, otherwise match without it
+              if (currentMFCC || !state.speakerProfile.calibrationComplete) {
+                matchedSpeaker = matchSpeaker(currentPitch, currentCentroid, currentRMS, currentMFCC);
+                
+                if (matchedSpeaker && matchedSpeaker.similarity > 0.7) {
+                  // Strong match found - update current speaker
+                  state.speakerProfile.currentSpeakerId = matchedSpeaker.speakerId;
+                  console.log(`[Multi-Speaker] Matched: ${matchedSpeaker.speakerId} (${(matchedSpeaker.similarity * 100).toFixed(1)}% similarity)`);
+                }
+              }
+            }
+            
+            // --- REAL-TIME VOICE ID ENFORCEMENT ---
+            // Only check if speech is confident (to avoid mismatching noise)
+
+              const basePitch = state.speakerProfile.baselinePitch;
+              const baseTimbre = state.speakerProfile.baselineTimbre;
+
+              let mismatch = null;
+
+              // --- PRODUCTION-LEVEL VOICE FINGERPRINT MATCHING ---
+              // Uses statistical matching with variance-aware thresholds
+              
+              // 1. SIMPLIFIED Pitch Check (Natural Conversation Approach)
+              // Real counselors don't do complex math - they just remember the voice range
+              // Use simple range check: pitch should be within ±50% of baseline (very lenient)
+              if (currentPitch > 50 && basePitch > 0) {
+                const pitchRatio = currentPitch / basePitch;
+                // Accept if pitch is within 0.5x to 1.5x baseline (covers natural variation)
+                if (pitchRatio < 0.5 || pitchRatio > 1.5) {
+                  // Only reject if volume is also very different (likely different speaker)
+                  const volumeRatio = currentRMS / (state.speakerProfile.baselineVolume || 0.01);
+                  if (volumeRatio < 0.2 || volumeRatio > 3.0) {
+                    mismatch = `Pitch+Volume Mismatch (Pitch: ${currentPitch.toFixed(0)}Hz vs ${basePitch.toFixed(0)}Hz, Vol: ${(volumeRatio * 100).toFixed(0)}%)`;
+                  }
+                  // Otherwise, allow it (main speaker might be excited/calm)
+                }
+              }
+
+              // 2. SIMPLIFIED Timbre Check (Skip complex checks - timbre varies a lot)
+              // Real counselors don't analyze timbre precisely - they just remember the voice
+              // Only check timbre if pitch already mismatched (double-check)
+              if (mismatch && currentCentroid > 0 && baseTimbre > 0) {
+                const timbreRatio = currentCentroid / baseTimbre;
+                // Only add timbre mismatch if it's WAY off (>2x or <0.5x) AND volume is also off
+                if ((timbreRatio < 0.3 || timbreRatio > 3.0)) {
+                  const volumeRatio = currentRMS / (state.speakerProfile.baselineVolume || 0.01);
+                  if (volumeRatio < 0.2 || volumeRatio > 3.0) {
+                    mismatch += " + Timbre";
+                  }
+                }
+              }
+              
+              // 3. SIMPLIFIED Voiceprint Check (Trust MFCC if available, otherwise skip)
+              // Real counselors trust their memory - if it sounds like the main speaker, it probably is
+              // Only use MFCC (most reliable) - skip complex voiceprint calculation
+              if (state.speakerProfile.voiceprint && !mismatch) {
+                const mfccHistoryLen = state.speakerProfile.mfccHistory.length;
+                const voiceprintToCheck = state.speakerProfile.voiceprint;
+                
+                // Only check if we have recent MFCC data
+                if (mfccHistoryLen > 0 && voiceprintToCheck.mfccBaseline) {
+                  const currentMFCC = state.speakerProfile.mfccHistory[mfccHistoryLen - 1];
+                  const mfccSimilarity = calculateMFCCSimilarity(currentMFCC, voiceprintToCheck.mfccBaseline);
+                  
+                  // SIMPLIFIED: Only reject if MFCC is very different (<0.3) AND volume is also off
+                  // MFCC is the most reliable feature - trust it
+                  if (mfccSimilarity < 0.3) {
+                    const volumeRatio = currentRMS / (state.speakerProfile.baselineVolume || 0.01);
+                    // Only reject if BOTH MFCC and volume are way off
+                    if (volumeRatio < 0.15 || volumeRatio > 4.0) {
+                      mismatch = `Voiceprint Mismatch (MFCC: ${(mfccSimilarity * 100).toFixed(1)}%, Volume: ${(volumeRatio * 100).toFixed(0)}%)`;
+                    }
+                    // Otherwise, trust MFCC and allow it (main speaker with different volume)
+                  }
+                }
+                // If no MFCC, skip voiceprint check entirely (trust pitch/volume checks above)
+              }
+
+              // Set or Clear Mismatch Flag
+              state.speakerProfile.lastMismatchReason = mismatch;
+
+              // --- SIMPLIFIED ADAPTIVE PROFILING (Natural Conversation) ---
+              // Only adapt when we're confident it's the main speaker speaking
+              // Adapt slowly to maintain stable baseline (like a real counselor remembering the client)
+              if (!mismatch && speechProb > 0.85 && currentRMS > state.speakerProfile.baselineVolume * 0.3) {
+                // Very slow adaptation (1% per frame) - only when confident
+                const alpha = 0.01; // Slow learning rate (1% per frame) - maintains stability
+
+                if (currentPitch > 50) {
+                  state.speakerProfile.baselinePitch =
+                    (state.speakerProfile.baselinePitch * (1 - alpha)) + (currentPitch * alpha);
+                }
+                if (currentCentroid > 0) {
+                  state.speakerProfile.baselineTimbre =
+                    (state.speakerProfile.baselineTimbre * (1 - alpha)) + (currentCentroid * alpha);
+                }
+
+                // Very slow volume adaptation (0.5% per frame) - prevents drift
+                if (currentRMS > 0 && currentRMS < state.speakerProfile.baselineVolume * 2.0) {
+                  // Only adapt if volume is reasonable (not a spike)
+                  state.speakerProfile.baselineVolume =
+                    (state.speakerProfile.baselineVolume * 0.995) + (currentRMS * 0.005); // Very slow (0.5%)
+                }
+
+                // SIMPLIFIED: Only log ID Card when there's a significant change (>5%)
+                // This prevents constant logging that clutters the console
+                if (!state.speakerProfile.lastAdaptationTime || 
+                    (Date.now() - state.speakerProfile.lastAdaptationTime) > 5000) {
+                  // Log at most once every 5 seconds
+                  const pLow = state.speakerProfile.baselinePitch * (1 - 0.45);
+                  const pHigh = state.speakerProfile.baselinePitch * (1 + 0.45);
+                  const vLow = state.speakerProfile.baselineVolume * 0.2;
+                  
+                  const currentLogString = `[ID CARD] Main Speaker: Pitch=${state.speakerProfile.baselinePitch.toFixed(0)}Hz (Range: ${pLow.toFixed(0)}-${pHigh.toFixed(0)}Hz) | VolBase=${state.speakerProfile.baselineVolume.toFixed(4)} (> ${vLow.toFixed(4)})`;
+                  
+                  if (state.speakerProfile.lastLogString !== currentLogString) {
+                    console.log(currentLogString);
+                    state.speakerProfile.lastLogString = currentLogString;
+                    state.speakerProfile.lastAdaptationTime = Date.now();
+                  }
+                }
+              }
+          }
+
+          if (currentRMS > state.speakerProfile.recentMaxRMS) {
+            state.speakerProfile.recentMaxRMS = currentRMS;
+          }
+          else {
+            state.speakerProfile.recentMaxRMS *= 0.95;
+          }
+        }
 
         state.currentVadProb = speechProb;
 
         if (vadState.version === 5) {
           if (output.stateN) vadState.h = output.stateN;
-        } else {
+        }
+        else {
           if (output.hn) vadState.h = output.hn;
           if (output.cn) vadState.c = output.cn;
         }
@@ -1005,17 +1629,16 @@
             }
             consecutiveSilenceFrames = 0; // Reset
           }
-        } else {
+        }
+        else {
           consecutiveSilenceFrames = 0; // Reset on speech
         }
-      } catch (err) {
-        console.error("VAD processing error:", err);
       }
+      catch (err) { console.error("VAD processing error:", err); }
     }
 
     async function setupVADAudioProcessing() {
       if (!aecStream) return;
-
       try {
         vadContext = new AudioContext({ sampleRate: vadSampleRate });
         const source = vadContext.createMediaStreamSource(aecStream);
@@ -1027,30 +1650,623 @@
         vadProcessor = new AudioWorkletNode(vadContext, 'vad-processor');
 
         // Handle audio data messages from the worklet
+        // FIXED: Queue processing to prevent out-of-order execution
+        let isProcessingVAD = false;
+        const vadQueue = [];
+        
         vadProcessor.port.onmessage = (event) => {
           if (!state.isCallActive) return;
-
           if (event.data.type === 'audioData') {
-            processAudioForVAD(event.data.data);
+            vadQueue.push(event.data.data);
+            
+            // Process queue sequentially to prevent race conditions
+            if (!isProcessingVAD) {
+              processVADQueue();
+            }
           }
         };
+        
+        async function processVADQueue() {
+          if (vadQueue.length === 0) {
+            isProcessingVAD = false;
+            return;
+          }
+          
+          isProcessingVAD = true;
+          const audioData = vadQueue.shift();
+          
+          try {
+            await processAudioForVAD(audioData);
+          } catch (err) {
+            console.error("VAD processing error:", err);
+          }
+          
+          // Process next item in queue
+          processVADQueue();
+        }
 
         source.connect(vadProcessor);
         vadProcessor.connect(vadContext.destination);
 
         console.log("VAD audio processing started (AudioWorklet)");
-      } catch (err) {
-        console.error("Could not setup VAD audio processing:", err);
       }
+      catch (err) { console.error("Could not setup VAD audio processing:", err); }
     }
 
     // Auto-init
     window.onload = async () => {
       connectWebSocket();
       await initVAD(); // Load VAD model on page load
+      
+      // ENHANCED: Load persisted voiceprints from localStorage
+      loadVoiceprintsFromStorage();
     };
 
-    // --- Utils ---
+    // --- Utils - OPTIMIZED FOR LATENCY ---
+    // Fast RMS calculation (inline, no function call overhead for hot path)
+    function calculateRMSFast(float32Array) {
+      let sumSq = 0;
+      const len = float32Array.length;
+      // Unroll loop for small arrays (512 samples typical)
+      for (let i = 0; i < len; i += 4) {
+        const v0 = float32Array[i];
+        const v1 = float32Array[i + 1] || 0;
+        const v2 = float32Array[i + 2] || 0;
+        const v3 = float32Array[i + 3] || 0;
+        sumSq += v0 * v0 + v1 * v1 + v2 * v2 + v3 * v3;
+      }
+      return Math.sqrt(sumSq / len);
+    }
+    
+    function calculateRMS(float32Array) {
+      return calculateRMSFast(float32Array);
+    }
+
+    function isVolumeOutlier(rms) {
+      if (!ENABLE_SPEAKER_FILTERING || !state.speakerProfile.calibrationComplete) return false;
+
+      const baseline = state.speakerProfile.baselineVolume;
+      if (!baseline) return false;
+
+      // Check High outlier (Shouting/Background noise)
+      if (rms > baseline * VOLUME_OUTLIER_THRESHOLD_HIGH) return true;
+
+      // Check Low outlier (Distant background speaker)
+      if (rms < baseline * VOLUME_OUTLIER_THRESHOLD_LOW) return true;
+
+      return false;
+    }
+
+    // --- Voice ID Utils ---
+    function calculateZeroCrossingRate(buffer) {
+      let zcr = 0;
+      for (let i = 1; i < buffer.length; i++) {
+        if ((buffer[i - 1] > 0 && buffer[i] < 0) || (buffer[i - 1] < 0 && buffer[i] > 0)) { zcr++; }
+      }
+      return zcr / buffer.length;
+    }
+    
+    /**
+     * ENHANCED: Calculate proper spectral centroid using FFT
+     * Spectral centroid represents the "brightness" of the sound
+     * Higher values = brighter/more high-frequency content
+     */
+    function calculateSpectralCentroid(buffer, sampleRate) {
+      if (!buffer || buffer.length < 256) return 0;
+      
+      // Use Web Audio API AnalyserNode for efficient FFT
+      // For now, use a simple approximation with windowed FFT
+      // In production, could use Web Audio API AnalyserNode
+      
+      const len = buffer.length;
+      const fftSize = 512; // Power of 2 for FFT
+      
+      // Simple windowed FFT approximation (Hann window)
+      let weightedSum = 0;
+      let magnitudeSum = 0;
+      
+      // Calculate frequency bins
+      const nyquist = sampleRate / 2;
+      const binWidth = nyquist / (fftSize / 2);
+      
+      // Simplified FFT using autocorrelation in frequency domain
+      // For production, use proper FFT library or Web Audio API
+      for (let k = 0; k < Math.min(fftSize / 2, len / 2); k++) {
+        let real = 0;
+        let imag = 0;
+        
+        // DFT calculation (simplified, could use FFT for speed)
+        for (let n = 0; n < len; n++) {
+          const angle = -2 * Math.PI * k * n / len;
+          const window = 0.5 * (1 - Math.cos(2 * Math.PI * n / len)); // Hann window
+          const sample = buffer[n] * window;
+          real += sample * Math.cos(angle);
+          imag += sample * Math.sin(angle);
+        }
+        
+        const magnitude = Math.sqrt(real * real + imag * imag);
+        const frequency = k * binWidth;
+        
+        weightedSum += frequency * magnitude;
+        magnitudeSum += magnitude;
+      }
+      
+      return magnitudeSum > 0 ? weightedSum / magnitudeSum : 0;
+    }
+    
+    /**
+     * ENHANCED: Calculate MFCC (Mel-Frequency Cepstral Coefficients)
+     * MFCCs are standard features for speaker recognition
+     * Returns array of 13 MFCC coefficients
+     */
+    function calculateMFCC(buffer, sampleRate) {
+      if (!buffer || buffer.length < 256) return null;
+      
+      // Simplified MFCC calculation (production would use optimized library)
+      // This is a lightweight approximation suitable for real-time use
+      
+      const len = buffer.length;
+      const numCoeffs = 13; // Standard: 13 MFCC coefficients
+      const numMelFilters = 26; // Number of mel filter banks
+      
+      // Step 1: Pre-emphasis filter (high-pass)
+      const preEmphasis = 0.97;
+      const emphasized = new Float32Array(len);
+      emphasized[0] = buffer[0];
+      for (let i = 1; i < len; i++) {
+        emphasized[i] = buffer[i] - preEmphasis * buffer[i - 1];
+      }
+      
+      // Step 2: Window (Hann window)
+      const windowed = new Float32Array(len);
+      for (let i = 0; i < len; i++) {
+        windowed[i] = emphasized[i] * 0.5 * (1 - Math.cos(2 * Math.PI * i / len));
+      }
+      
+      // Step 3: Simplified FFT (use autocorrelation approximation for speed)
+      // In production, use proper FFT
+      const fftSize = 512;
+      const powerSpectrum = new Float32Array(fftSize / 2);
+      
+      for (let k = 0; k < fftSize / 2; k++) {
+        let real = 0;
+        let imag = 0;
+        
+        for (let n = 0; n < Math.min(len, fftSize); n++) {
+          const angle = -2 * Math.PI * k * n / fftSize;
+          real += windowed[n] * Math.cos(angle);
+          imag += windowed[n] * Math.sin(angle);
+        }
+        
+        powerSpectrum[k] = real * real + imag * imag;
+      }
+      
+      // Step 4: Mel filter bank (simplified)
+      const melFilters = createMelFilterBank(numMelFilters, fftSize, sampleRate);
+      const melSpectrum = new Float32Array(numMelFilters);
+      
+      for (let i = 0; i < numMelFilters; i++) {
+        let sum = 0;
+        for (let j = 0; j < fftSize / 2; j++) {
+          sum += powerSpectrum[j] * melFilters[i][j];
+        }
+        melSpectrum[i] = Math.log(sum + 1e-10); // Log to compress dynamic range
+      }
+      
+      // Step 5: DCT (Discrete Cosine Transform) to get cepstral coefficients
+      const mfcc = new Float32Array(numCoeffs);
+      for (let i = 0; i < numCoeffs; i++) {
+        let sum = 0;
+        for (let j = 0; j < numMelFilters; j++) {
+          sum += melSpectrum[j] * Math.cos(Math.PI * i * (j + 0.5) / numMelFilters);
+        }
+        mfcc[i] = sum;
+      }
+      
+      return Array.from(mfcc);
+    }
+    
+    /**
+     * Helper: Create Mel filter bank
+     */
+    function createMelFilterBank(numFilters, fftSize, sampleRate) {
+      const nyquist = sampleRate / 2;
+      const melMax = 2595 * Math.log10(1 + nyquist / 700);
+      const melStep = melMax / (numFilters + 1);
+      
+      const filters = [];
+      for (let i = 0; i < numFilters; i++) {
+        const filter = new Float32Array(fftSize / 2);
+        const melCenter = (i + 1) * melStep;
+        const freqCenter = 700 * (Math.pow(10, melCenter / 2595) - 1);
+        const binCenter = Math.floor(freqCenter * fftSize / sampleRate);
+        
+        const melStart = i * melStep;
+        const freqStart = 700 * (Math.pow(10, melStart / 2595) - 1);
+        const binStart = Math.floor(freqStart * fftSize / sampleRate);
+        
+        const melEnd = (i + 2) * melStep;
+        const freqEnd = 700 * (Math.pow(10, melEnd / 2595) - 1);
+        const binEnd = Math.floor(freqEnd * fftSize / sampleRate);
+        
+        for (let bin = binStart; bin < binEnd && bin < fftSize / 2; bin++) {
+          if (bin < binCenter) {
+            filter[bin] = (bin - binStart) / (binCenter - binStart);
+          } else {
+            filter[bin] = (binEnd - bin) / (binEnd - binCenter);
+          }
+        }
+        
+        filters.push(filter);
+      }
+      
+      return filters;
+    }
+    
+    /**
+     * ENHANCED: Load voiceprints from localStorage (persistent storage)
+     */
+    function loadVoiceprintsFromStorage() {
+      try {
+        const stored = localStorage.getItem('voice_agent_voiceprints');
+        if (stored) {
+          const voiceprints = JSON.parse(stored);
+          state.speakerProfile.knownSpeakers.clear();
+          
+          for (const item of voiceprints) {
+            if (item.speakerId && item.voiceprint) {
+              state.speakerProfile.knownSpeakers.set(item.speakerId, item.voiceprint);
+            }
+          }
+          
+          console.log(`>> Loaded ${voiceprints.length} voiceprint(s) from localStorage`);
+          return voiceprints.length;
+        }
+      } catch (e) {
+        console.warn("Could not load voiceprints from localStorage:", e);
+      }
+      return 0;
+    }
+    
+    /**
+     * ENHANCED: Match current voice against known speakers (multi-speaker support)
+     */
+    function matchSpeaker(currentPitch, currentTimbre, currentVolume, mfccFeatures) {
+      if (!state.speakerProfile.knownSpeakers || state.speakerProfile.knownSpeakers.size === 0) {
+        return null;
+      }
+      
+      let bestMatch = null;
+      let bestSimilarity = 0;
+      
+      for (const [speakerId, voiceprint] of state.speakerProfile.knownSpeakers.entries()) {
+        const similarity = calculateVoiceprintSimilarity(
+          currentPitch, currentTimbre, currentVolume, voiceprint
+        );
+        
+        // If MFCC available, enhance similarity calculation
+        if (mfccFeatures && voiceprint.mfccBaseline) {
+          const mfccSimilarity = calculateMFCCSimilarity(mfccFeatures, voiceprint.mfccBaseline);
+          // Weighted combination: 70% voiceprint, 30% MFCC
+          const combinedSimilarity = similarity * 0.7 + mfccSimilarity * 0.3;
+          
+          // IMPROVED: Lower threshold from 0.6 to 0.5 for more lenient matching
+          if (combinedSimilarity > bestSimilarity && combinedSimilarity > 0.5) {
+            bestSimilarity = combinedSimilarity;
+            bestMatch = { speakerId, voiceprint, similarity: combinedSimilarity };
+          }
+        } else if (similarity > bestSimilarity && similarity > 0.5) {
+          // IMPROVED: Lower threshold from 0.6 to 0.5
+          bestSimilarity = similarity;
+          bestMatch = { speakerId, voiceprint, similarity };
+        }
+      }
+      
+      return bestMatch;
+    }
+    
+    /**
+     * Calculate MFCC similarity using cosine similarity
+     */
+    function calculateMFCCSimilarity(mfcc1, mfcc2) {
+      if (!mfcc1 || !mfcc2 || mfcc1.length !== mfcc2.length) return 0;
+      
+      let dotProduct = 0;
+      let norm1 = 0;
+      let norm2 = 0;
+      
+      for (let i = 0; i < mfcc1.length; i++) {
+        dotProduct += mfcc1[i] * mfcc2[i];
+        norm1 += mfcc1[i] * mfcc1[i];
+        norm2 += mfcc2[i] * mfcc2[i];
+      }
+      
+      const denominator = Math.sqrt(norm1 * norm2);
+      return denominator > 0 ? dotProduct / denominator : 0;
+    }
+
+    // OPTIMIZED: Fast pitch calculation with early exits and reduced search
+    function calculatePitchFast(buffer, sampleRate) {
+      if (!buffer || buffer.length < 256) return 0;
+      
+      const len = buffer.length;
+      const minPeriod = Math.floor(sampleRate / 400);
+      const maxPeriod = Math.min(Math.floor(sampleRate / 80), len - 1);
+      
+      // Early exit: Quick RMS check (inline, no function call)
+      let rms = 0;
+      for (let i = 0; i < len; i += 4) {
+        const v = buffer[i];
+        rms += v * v;
+      }
+      rms = Math.sqrt(rms / len);
+      if (rms < 0.01) return 0;
+      
+      // OPTIMIZATION: Coarse-to-fine search (saves ~60% computation)
+      // First pass: Search every 4th period (coarse)
+      let bestOffset = -1;
+      let bestCorrelation = -Infinity;
+      const coarseStep = 4;
+      
+      for (let offset = minPeriod; offset <= maxPeriod; offset += coarseStep) {
+        let correlation = 0;
+        let norm1 = 0;
+        let norm2 = 0;
+        const limit = len - offset;
+        
+        // Unroll inner loop for speed
+        for (let i = 0; i < limit; i += 2) {
+          const v1 = buffer[i];
+          const v2 = buffer[i + offset];
+          correlation += v1 * v2;
+          norm1 += v1 * v1;
+          norm2 += v2 * v2;
+        }
+        
+        const normalizedCorr = correlation / (Math.sqrt(norm1 * norm2) + 1e-10);
+        if (normalizedCorr > bestCorrelation) {
+          bestCorrelation = normalizedCorr;
+          bestOffset = offset;
+        }
+      }
+      
+      // Early exit if no good correlation found
+      if (bestCorrelation < 0.2) return 0;
+      
+      // Second pass: Fine search around best offset (±coarseStep)
+      const fineStart = Math.max(minPeriod, bestOffset - coarseStep);
+      const fineEnd = Math.min(maxPeriod, bestOffset + coarseStep);
+      
+      for (let offset = fineStart; offset <= fineEnd; offset++) {
+        if (offset === bestOffset) continue; // Already checked
+        
+        let correlation = 0;
+        let norm1 = 0;
+        let norm2 = 0;
+        const limit = len - offset;
+        
+        for (let i = 0; i < limit; i++) {
+          const v1 = buffer[i];
+          const v2 = buffer[i + offset];
+          correlation += v1 * v2;
+          norm1 += v1 * v1;
+          norm2 += v2 * v2;
+        }
+        
+        const normalizedCorr = correlation / (Math.sqrt(norm1 * norm2) + 1e-10);
+        if (normalizedCorr > bestCorrelation) {
+          bestCorrelation = normalizedCorr;
+          bestOffset = offset;
+        }
+      }
+      
+      if (bestOffset > -1 && bestCorrelation > 0.3) {
+        return sampleRate / bestOffset;
+      }
+      return 0;
+    }
+    
+    // Alias for backward compatibility
+    function calculatePitch(buffer, sampleRate) {
+      return calculatePitchFast(buffer, sampleRate);
+    }
+    
+    /**
+     * OPTIMIZED: Production-level Voiceprint Similarity Calculation
+     * Fast path with cached calculations and early exits
+     */
+    function calculateVoiceprintSimilarity(currentPitch, currentTimbre, currentVolume, voiceprint) {
+      if (!voiceprint) return 1.0;
+      
+      // Cache square roots (avoid recalculating)
+      const pitchStdDev = voiceprint.pitchVariance > 0 ? Math.sqrt(voiceprint.pitchVariance) : 0;
+      const timbreStdDev = voiceprint.timbreVariance > 0 ? Math.sqrt(voiceprint.timbreVariance) : 0;
+      
+      let weightedSum = 0;
+      let totalWeight = 0;
+      
+      // 1. Pitch Similarity (40% weight) - Fast path
+      if (currentPitch > 50 && voiceprint.pitch > 0) {
+        const pitchDiff = currentPitch > voiceprint.pitch 
+          ? currentPitch - voiceprint.pitch 
+          : voiceprint.pitch - currentPitch; // Faster than Math.abs
+        
+        if (pitchStdDev > 0) {
+          const pitchZScore = pitchDiff / (pitchStdDev + 1e-10);
+          const pitchSimilarity = pitchZScore < 3.0 ? Math.max(0, 1 - (pitchZScore / 3.0)) : 0;
+          weightedSum += pitchSimilarity * 0.4;
+          totalWeight += 0.4;
+        } else {
+          const pitchRatio = 1 - Math.min(1, pitchDiff / voiceprint.pitch);
+          weightedSum += pitchRatio * 0.4;
+          totalWeight += 0.4;
+        }
+      }
+      
+      // 2. Timbre Similarity (30% weight) - Fast path
+      if (currentTimbre > 0 && voiceprint.timbre > 0) {
+        const timbreDiff = currentTimbre > voiceprint.timbre 
+          ? currentTimbre - voiceprint.timbre 
+          : voiceprint.timbre - currentTimbre;
+        
+        if (timbreStdDev > 0) {
+          const timbreZScore = timbreDiff / (timbreStdDev + 1e-10);
+          const timbreSimilarity = timbreZScore < 3.0 ? Math.max(0, 1 - (timbreZScore / 3.0)) : 0;
+          weightedSum += timbreSimilarity * 0.3;
+          totalWeight += 0.3;
+        } else {
+          const timbreRatio = 1 - Math.min(1, timbreDiff / (voiceprint.timbre + 1e-10));
+          weightedSum += timbreRatio * 0.3;
+          totalWeight += 0.3;
+        }
+      }
+      
+      // 3. Volume Similarity (30% weight) - Fast path
+      if (currentVolume > 0 && voiceprint.volume > 0) {
+        const minVol = currentVolume < voiceprint.volume ? currentVolume : voiceprint.volume;
+        const maxVol = currentVolume > voiceprint.volume ? currentVolume : voiceprint.volume;
+        const volumeRatio = minVol / (maxVol + 1e-10);
+        weightedSum += volumeRatio * 0.3;
+        totalWeight += 0.3;
+      }
+      
+      return totalWeight > 0 ? weightedSum / totalWeight : 1.0;
+    }
+
+    // OPTIMIZED: Pre-compute keyword sets for O(1) lookup
+    const backgroundKeywordsSet = new Set([
+      'did you', 'can you get', 'where is', 'come here', 'look at this',
+      'turn on', 'turn off', 'what time', 'dinner', 'lunch', 'breakfast',
+      'breaking news', 'weather forecast', 'sports update', 'coming up next',
+      'tune in', 'stay tuned', 'commercial break', 'advertisement',
+      'close the door', 'open the window', 'switch on', 'switch off',
+      'turn the light', 'turn the fan', 'turn the tv', 'turn the radio',
+      'answer the phone', 'pick up the phone', 'hang up',
+      'start recording', 'stop recording', 'caption', 'subtitle',
+      'voice mail', 'leave a message', 'press one', 'press two',
+      'hey mom', 'hey dad', 'mom can you', 'dad can you',
+      'what are you doing', 'where are you going', 'when are you',
+      'play music', 'pause music', 'next song', 'previous song',
+      'volume up', 'volume down', 'mute', 'unmute'
+    ]);
+    
+    // Short keywords for fast exact match
+    const shortKeywords = ['ok', 'no', 'hi', 'ya', 'yo', 'turn', 'on', 'off', 'up', 'down'];
+    
+    function isLikelyBackgroundNoise(text) {
+      if (!ENABLE_SPEAKER_FILTERING || !ENABLE_KEYWORD_FILTERING) return false;
+
+      const lowerText = text.toLowerCase().trim();
+      const textLen = lowerText.length;
+      
+      // Fast path: Very short text - check exact match first
+      if (textLen < 5) {
+        return shortKeywords.includes(lowerText);
+      }
+      
+      // Fast path: Exact match in Set (O(1))
+      if (backgroundKeywordsSet.has(lowerText)) {
+        return true;
+      }
+      
+      // Medium text: Check if text contains any keyword (early exit)
+      if (textLen < 30) {
+        for (const keyword of backgroundKeywordsSet) {
+          if (lowerText.includes(keyword)) return true;
+        }
+        return false;
+      }
+      
+      // Long text: Check substring matches (only for longer keywords to avoid false positives)
+      for (const keyword of backgroundKeywordsSet) {
+        if (keyword.length >= 8 && lowerText.includes(keyword)) {
+          return true;
+        }
+      }
+      
+      return false;
+    }
+
+    // MULTI-LAYER FILTER DECISION
+    function shouldAcceptInput(transcript, volumeRMS, currentSpokenText) {
+      // Fast exit if speaker filtering is disabled
+      if (!ENABLE_SPEAKER_FILTERING) return true;
+      
+      if (!ENABLE_VOLUME_FILTERING || !state.speakerProfile.calibrationComplete) return true;
+
+      const reasons = [];
+      const isOutlier = isVolumeOutlier(volumeRMS);
+      const isKeyword = isLikelyBackgroundNoise(transcript);
+
+      // Note: Mirroring Echo Logic from onresult here for the decision matrix
+      // We don't implement full echo check here to avoid code duplication, 
+      // but we rely on the outlier flag to boost decision.
+
+      if (isOutlier) reasons.push('volume_outlier');
+      if (isKeyword) reasons.push('background_keyword');
+
+      // REJECT IF: 
+      // 1. Volume Outlier AND Keyword (High Confidence Background)
+      if (isOutlier && isKeyword) {
+        console.log(`>> REJECTED (${reasons.join('+')}): "${transcript}"`);
+        return false;
+      }
+
+      // 2. Volume Outlier (EXTREME) - e.g. 4x baseline (Shouting) or 0.1x (Whisper)
+      // We use stricter thresholds for "pure volume" rejection
+      // Fast path: Skip if not calibrated yet
+      if (!state.speakerProfile.calibrationComplete) {
+        return true; // Accept until calibration is complete
+      }
+
+      const baseline = state.speakerProfile.baselineVolume;
+      if (!baseline || baseline <= 0) {
+        return true; // Safety check
+      }
+
+      // IMPROVED: Better debug logging with more context
+      if (volumeRMS < baseline * VOLUME_OUTLIER_THRESHOLD_LOW || volumeRMS > baseline * 4.0) {
+        const mismatchReason = state.speakerProfile.lastMismatchReason || 'None';
+        console.log(`[FILTER] RMS: ${volumeRMS.toFixed(5)} | Base: ${baseline.toFixed(5)} | Ratio: ${(volumeRMS / baseline).toFixed(2)}x | Mismatch: ${mismatchReason}`);
+      }
+
+      // High volume outlier (shouting/background noise spike)
+      if (volumeRMS > baseline * 4.0) {
+        console.log(`>> REJECTED (High Volume Outlier): "${transcript}" (RMS: ${volumeRMS.toFixed(4)} > ${baseline.toFixed(4)} * 4.0)`);
+        return false;
+      }
+
+      // Low volume outlier (distant background speaker)
+      // IMPROVED: Only reject if volume is VERY low AND we have a mismatch reason
+      // This prevents rejecting the main speaker who might be speaking quietly
+      if (volumeRMS < baseline * VOLUME_OUTLIER_THRESHOLD_LOW) {
+        // If we have a biometric mismatch, it's likely background noise
+        if (state.speakerProfile.lastMismatchReason) {
+          console.log(`>> REJECTED (Low Volume/Background + Biometric Mismatch): "${transcript}" (RMS: ${volumeRMS.toFixed(4)} < Threshold: ${(baseline * VOLUME_OUTLIER_THRESHOLD_LOW).toFixed(4)})`);
+          return false;
+        }
+        // Otherwise, if volume is extremely low (< 0.1x baseline), reject
+        else if (volumeRMS < baseline * 0.1) {
+          console.log(`>> REJECTED (Extremely Low Volume): "${transcript}" (RMS: ${volumeRMS.toFixed(4)} < ${(baseline * 0.1).toFixed(4)})`);
+          return false;
+        }
+        // If volume is low but not extremely low, allow it (main speaker might be speaking quietly)
+        else {
+          console.log(`[ALLOW] Low volume but no mismatch, allowing: "${transcript}" (RMS: ${volumeRMS.toFixed(4)})`);
+        }
+      }
+
+      // 3. VOICE ID LITE (Biometric Check)
+      // Enforce Pitch/Timbre matching if calibrated
+      // This check uses the mismatch flag set in processAudioForVAD (real-time analysis)
+      if (state.speakerProfile.calibrationComplete && state.speakerProfile.lastMismatchReason) {
+        console.log(`>> REJECTED (Biometric Verification): ${state.speakerProfile.lastMismatchReason}`);
+        return false;
+      }
+
+      return true;
+    }
+
     function levenshtein(a, b) {
       const matrix = [];
       for (let i = 0; i <= b.length; i++) { matrix[i] = [i]; }

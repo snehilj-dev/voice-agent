@@ -268,6 +268,8 @@ wss.on("connection", async (ws: WebSocket, req) => {
           const stream = streamCounselorReply(counselorCtx, userText, signal);
           let sentenceBuffer = "";
           let fullReplyAggregated = "";
+          let lastSentences: string[] = []; // Track last 3 sentences to detect repetition
+          let repetitionCount = 0; // Count consecutive repetitions
 
           for await (const chunk of stream) {
             if (signal.aborted) break;
@@ -287,6 +289,50 @@ wss.on("connection", async (ws: WebSocket, req) => {
               if (signal.aborted) break;
 
               if (completeSentence) {
+                // REPETITION DETECTION: Check if this sentence is too similar to recent ones
+                const isRepetition = lastSentences.some(prev => {
+                  // Check if sentences are very similar (same words, same structure)
+                  const normalizedCurrent = completeSentence.toLowerCase().replace(/[^\w\s]/g, '').trim();
+                  const normalizedPrev = prev.toLowerCase().replace(/[^\w\s]/g, '').trim();
+                  
+                  // If sentences are >80% similar, it's likely a repetition
+                  if (normalizedCurrent.length < 10 || normalizedPrev.length < 10) return false; // Skip very short sentences
+                  
+                  const wordsCurrent = normalizedCurrent.split(/\s+/);
+                  const wordsPrev = normalizedPrev.split(/\s+/);
+                  const commonWords = wordsCurrent.filter(w => wordsPrev.includes(w)).length;
+                  const similarity = commonWords / Math.max(wordsCurrent.length, wordsPrev.length);
+                  
+                  return similarity > 0.8; // 80% word overlap = repetition
+                });
+
+                if (isRepetition) {
+                  repetitionCount++;
+                  console.warn(`[REPETITION DETECTED] Sentence #${repetitionCount}: "${completeSentence.substring(0, 50)}..."`);
+                  
+                  // If we detect 2+ repetitions, stop the stream to prevent loop
+                  if (repetitionCount >= 2) {
+                    console.error("[LOOP DETECTED] Stopping stream to prevent infinite repetition");
+                    currentController?.abort();
+                    ws.send(JSON.stringify({
+                      type: "llm_error",
+                      error: "Response loop detected. Please try again.",
+                    }));
+                    break;
+                  }
+                  // Skip this sentence (don't send/TTS)
+                  continue;
+                } else {
+                  // Reset repetition count if we get a new sentence
+                  repetitionCount = 0;
+                }
+
+                // Track last 3 sentences (for repetition detection)
+                lastSentences.push(completeSentence);
+                if (lastSentences.length > 3) {
+                  lastSentences.shift(); // Keep only last 3
+                }
+
                 console.log("Processing sentence:", completeSentence);
                 // Send text chunk to frontend
                 ws.send(JSON.stringify({

@@ -372,6 +372,13 @@ After you have all 7 fields (Name, Phone, Course, Education, Intake Year, City, 
 
 CRITICAL: You MUST use the real data from the conversation, NOT example values.
 
+⚠️ ANTI-REPETITION RULE (CRITICAL):
+- When reading back the summary, list each field ONCE only.
+- DO NOT repeat the same field multiple times.
+- DO NOT say "Education" or any field name more than once in the summary.
+- Format: List all 7 fields in one go, then ask for confirmation.
+- If you find yourself repeating a field, STOP immediately and move to the next field or end the summary.
+
 Example format (Hinglish) - Replace with ACTUAL collected data:
 "Bahut accha, main confirm kar leti hoon:
 - Naam: [USE ACTUAL NAME FROM CONVERSATION]
@@ -524,6 +531,8 @@ export async function* streamCounselorReply(
       temperature: 0.2, // Lower temp for more deterministic behavior on noise
       max_tokens: 220,
       stream: true,
+      frequency_penalty: 0.6, // INCREASED: Stronger penalty to prevent repetition (especially during summary)
+      presence_penalty: 0.3, // Added: Penalty for repeating topics already mentioned
     },
     { signal }
   );
