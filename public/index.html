@@ -747,6 +747,10 @@
         // Without this, multi-speaker matching could incorrectly trigger across separate calls
         // causing false speaker identification
         state.speakerProfile.knownSpeakers.clear();
+        // FIXED: Reload voiceprints from localStorage after clearing to restore persistent speakers
+        // This ensures multi-speaker persistence works correctly - speakers from previous calls
+        // are restored, and new speakers are merged when saving (not overwritten)
+        loadVoiceprintsFromStorage();
         state.speakerProfile.currentSpeakerId = null;
         console.log(">> Speaker profile reset for new call");
       }
@@ -1344,8 +1348,16 @@
               // If we detected a greeting (call initiator) or this is the first speaker,
               // give their samples higher weight during calibration
               let speakerWeight = 1.0;
+              // FIXED: Consistent threshold calculation - use firstSpeakerVolume if available and > 0,
+              // otherwise use currentRMS as fallback. Previous implementation used 1 as fallback,
+              // causing threshold to jump from 0.0005 (for 0.001 volume) to 0.5 (for null/0),
+              // leading to inconsistent classification of the same voice at different volumes.
+              const firstSpeakerVol = state.speakerProfile.firstSpeakerVolume;
+              const volumeThreshold = (firstSpeakerVol && firstSpeakerVol > 0) 
+                ? firstSpeakerVol * 0.5 
+                : currentRMS * 0.5;
               const isFirstSpeaker = state.speakerProfile.firstSpeakerDetected && 
-                Math.abs(currentRMS - (state.speakerProfile.firstSpeakerVolume || 0)) < (state.speakerProfile.firstSpeakerVolume || 1) * 0.5 &&
+                Math.abs(currentRMS - (firstSpeakerVol || 0)) < volumeThreshold &&
                 (state.speakerProfile.firstSpeakerPitch === null || Math.abs(currentPitch - (state.speakerProfile.firstSpeakerPitch || 0)) < 50);
               
               if (state.speakerProfile.callInitiatorDetected || isFirstSpeaker) {
@@ -1556,13 +1568,26 @@
                 state.speakerProfile.knownSpeakers.set(speakerId, state.speakerProfile.voiceprint);
                 
                 // Persist to localStorage (persistent storage)
+                // FIXED: Merge with existing localStorage data instead of overwriting
+                // Previous implementation overwrote all speakers with only current call's speakers,
+                // causing permanent loss of speakers from previous calls
                 try {
-                  const voiceprintsToSave = Array.from(state.speakerProfile.knownSpeakers.entries()).map(([id, vp]) => ({
-                    speakerId: id,
-                    voiceprint: vp
-                  }));
+                  // Load existing voiceprints from localStorage
+                  const existing = localStorage.getItem('voice_agent_voiceprints');
+                  const existingVoiceprints = existing ? JSON.parse(existing) : [];
+                  
+                  // Create a map of existing voiceprints for quick lookup
+                  const existingMap = new Map(existingVoiceprints.map(vp => [vp.speakerId, vp]));
+                  
+                  // Add/update current call's speakers
+                  for (const [id, vp] of state.speakerProfile.knownSpeakers.entries()) {
+                    existingMap.set(id, { speakerId: id, voiceprint: vp });
+                  }
+                  
+                  // Save merged voiceprints back to localStorage
+                  const voiceprintsToSave = Array.from(existingMap.values());
                   localStorage.setItem('voice_agent_voiceprints', JSON.stringify(voiceprintsToSave));
-                  console.log(`>> Voiceprint saved to localStorage (${voiceprintsToSave.length} speakers)`);
+                  console.log(`>> Voiceprint saved to localStorage (${voiceprintsToSave.length} speakers, merged with existing)`);
                 } catch (e) {
                   console.warn("Could not save voiceprint to localStorage:", e);
                 }
@@ -2152,12 +2177,17 @@
       const maxPeriod = Math.min(Math.floor(sampleRate / 80), len - 1);
       
       // Early exit: Quick RMS check (inline, no function call)
+      // FIXED: Count actual samples processed - loop processes every 4th sample (i += 4),
+      // so we process len/4 samples, not len. Dividing by len instead of actual count
+      // underestimates RMS by a factor of 2, causing valid quiet speech to be incorrectly rejected.
       let rms = 0;
+      let sampleCount = 0;
       for (let i = 0; i < len; i += 4) {
         const v = buffer[i];
         rms += v * v;
+        sampleCount++;
       }
-      rms = Math.sqrt(rms / len);
+      rms = Math.sqrt(rms / sampleCount);
       if (rms < 0.01) return 0;
       
       // OPTIMIZATION: Coarse-to-fine search (saves ~60% computation)
